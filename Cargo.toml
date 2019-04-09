@@ -1,0 +1,13 @@
+[package]
+name = "grammer"
+version = "0.0.0"
+authors = [
+    "Ana-Maria <mihalacheana.maria@yahoo.com>",
+    "Eduard-Mihai Burtescu <edy.burt@gmail.com>"
+]
+edition = "2018"
+repository = "https://github.com/lykenware/grammer"
+license = "MIT/Apache-2.0"
+keywords = ["grammar"]
+readme = "README.md"
+description = "Grammar framework."
