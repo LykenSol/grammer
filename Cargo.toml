@@ -1,6 +1,6 @@
 [package]
 name = "grammer"
-version = "0.0.0"
+version = "0.0.1"
 authors = [
     "Ana-Maria <mihalacheana.maria@yahoo.com>",
     "Eduard-Mihai Burtescu <edy.burt@gmail.com>"
@@ -11,3 +11,6 @@ license = "MIT/Apache-2.0"
 keywords = ["grammar"]
 readme = "README.md"
 description = "Grammar framework."
+
+[dependencies]
+ordermap = "0.3.0"
