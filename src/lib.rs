@@ -56,7 +56,7 @@ impl<Pat> Grammar<Pat> {
                     None => elem
                         .fold(self)
                         .repeat_more(Some((self.whitespace.clone(), SepKind::Simple))),
-                    // A* % B => A* % A* % (WS B WS)
+                    // A* % B => A* % (WS B WS)
                     Some((sep, SepKind::Simple)) => elem.fold(self).repeat_more(Some((
                         self.whitespace.clone() + sep + self.whitespace.clone(),
                         SepKind::Simple,
