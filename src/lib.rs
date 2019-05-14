@@ -64,12 +64,10 @@ impl<Pat> Grammar<Pat> {
                     // FIXME(cad97) this will insert too many whitespace rules
                     // A* %% B => ???
                     // Currently, A* %% (WS B WS), which allows trailing whitespace incorrectly
-                    Some((sep, SepKind::Trailing)) => {
-                        elem.fold(self).repeat_more(Some((
-                            self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
-                            SepKind::Trailing,
-                        )))
-                    }
+                    Some((sep, SepKind::Trailing)) => elem.fold(self).repeat_more(Some((
+                        self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
+                        SepKind::Trailing,
+                    ))),
                 }
             }
             fn fold_repeat_more(
@@ -124,12 +122,6 @@ pub fn empty<Pat>() -> RuleWithNamedFields<Pat> {
 pub fn eat<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
         rule: Rc::new(Rule::Eat(pat.into())),
-        fields: OrderMap::new(),
-    }
-}
-pub fn negative_lookahead<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
-    RuleWithNamedFields {
-        rule: Rc::new(Rule::NegativeLookahead(pat.into())),
         fields: OrderMap::new(),
     }
 }
@@ -315,7 +307,6 @@ pub enum SepKind {
 pub enum Rule<Pat> {
     Empty,
     Eat(Pat),
-    NegativeLookahead(Pat),
     Call(String),
 
     Concat([Rc<Rule<Pat>>; 2]),
@@ -338,7 +329,6 @@ impl<Pat> Rule<Pat> {
         match self {
             Rule::Empty
             | Rule::Eat(_)
-            | Rule::NegativeLookahead(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => false,
@@ -388,9 +378,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         grammar: &Grammar<Pat>,
     ) -> MaybeKnown<bool> {
         match self {
-            Rule::Empty | Rule::NegativeLookahead(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
-                MaybeKnown::Known(true)
-            }
+            Rule::Empty | Rule::Opt(_) | Rule::RepeatMany(..) => MaybeKnown::Known(true),
             Rule::Eat(pat) => pat.matches_empty(),
             Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar),
             Rule::Concat([left, right]) => {
@@ -409,7 +397,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         grammar: &Grammar<Pat>,
     ) {
         match self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {}
+            Rule::Empty | Rule::Eat(_) | Rule::Call(_) => {}
             Rule::Concat([left, right]) => {
                 left.check_non_empty_opt(cache, grammar);
                 right.check_non_empty_opt(cache, grammar);
@@ -435,7 +423,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
 
     fn check_call_names(&self, grammar: &Grammar<Pat>) {
         match self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {}
+            Rule::Empty | Rule::Eat(_) => {}
             Rule::Call(rule) => {
                 assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
             }
@@ -579,9 +567,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
             fields: self.filter_fields(Some(i)).collect(),
         };
         let mut rule = match &*self.rule {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {
-                return folder.fold_leaf(self)
-            }
+            Rule::Empty | Rule::Eat(_) | Rule::Call(_) => return folder.fold_leaf(self),
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
             }
@@ -609,10 +595,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
 /// Construct a (meta-)grammar for parsing a grammar.
 pub fn grammar_grammar<Pat>() -> Grammar<Pat>
 where
-    Pat: Clone
-        + From<&'static str>
-        + From<std::ops::RangeInclusive<char>>
-        + From<std::ops::RangeFull>,
+    Pat: Clone + From<&'static str>,
 {
     // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
     macro_rules! rule {
@@ -662,57 +645,87 @@ where
         })
     }
 
+    // Main grammar.
     let mut grammar = grammar! {
-        // Lexical grammar.
-        Whitespace = {
-            {{
-                " " | "\t" | "\n" | "\r" |
-                { "//" {{ {!"\n"} .. }*} "\n" } |
-                { "/*" {{ {!"*/"} .. }*} "*/" }
-            }*}
-            {!" "} {!"\t"} {!"\n"} {!"\r"} {!"//"} {!"/*"}
-        };
-        Shebang = { "#!" {{ {!"\n"} .. }*} "\n" };
-
-        IdentStart = {'a'..='z'} | {'A'..='Z'} | "_";
-        IdentCont = IdentStart | {'0'..='9'};
-        NotIdent = { {!'a'..='z'} {!'A'..='Z'} {!"_"} {!'0'..='9'} };
-        Ident = { IdentStart {IdentCont*} NotIdent };
-
-        StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
-        CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
-        Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
+        Grammar = { FileStart {rules:{RuleDef*}} FileEnd };
+        RuleDef = { {name:Ident} "=" {rule:Or} ";" };
+        Or = {{"|"?} {rules:{Concat+ % "|"}}};
+        Concat = {rules:{Rule+}};
+        Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
+        Primary =
+            {Eat:Pattern} |
+            {Call:Ident} |
+            {Group:{ "{" {{or:Or}?} "}" }};
+        Modifier =
+            {Opt:"?"} |
+            {Repeat:{ {repeat:Repeat} {{ {kind:SepKind} {sep:Primary} }?} }};
+        Repeat =
+            {Many:"*"} |
+            {More:"+"};
+        SepKind =
+            {Simple:"%"} |
+            // HACK(eddyb) should be "%%", but `rustc`'s `proc_macro` server doesn't
+            // always preserve jointness, except within multi-character Rust operators.
+            {Trailing:{"%" "%"}};
+        Pattern =
+            {Str:StrLit} |
+            {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
+            {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
     };
 
-    grammar.extend(
-        grammar! {
-            // Main grammar.
-            Grammar = { {Shebang?} {rules:{RuleDef*}} Whitespace };
-            RuleDef = { {name:Ident} "=" {rule:Or} ";" };
-            Or = {{"|"?} {rules:{Concat+ % "|"}}};
-            Concat = {rules:{Rule+}};
-            Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
-            Primary =
-                {Eat:Pattern} |
-                {NegativeLookahead:{ "!" {pat:Pattern} }} |
-                {Call:Ident} |
-                {Group:{ "{" {{or:Or}?} "}" }};
-            Modifier =
-                {Opt:"?"} |
-                {Repeat:{ {repeat:Repeat} {{ {kind:SepKind} {sep:Primary} }?} }};
-            Repeat =
-                {Many:"*"} |
-                {More:"+"};
-            SepKind =
-                {Simple:"%"} |
-                {Trailing:{"%" "%"}}; // HACK(CAD97): should be "%%" once gll no longer string roundtrips
-            Pattern =
-                {Str:StrLit} |
-                {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
-                {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
+    // Lexical fragment of the grammar.
+    let proc_macro = true;
+    if proc_macro {
+        grammar.extend(grammar! {
+            FileStart = "";
+            FileEnd = "";
+
+            Ident = IDENT;
+
+            // FIXME(eddyb) restrict literals, once `proc_macro` allows it.
+            StrLit = LITERAL;
+            CharLit = LITERAL;
+        });
+    } else {
+        // HACK(eddyb) keeping the scannerless version around for posterity.
+        #[allow(unused)]
+        fn negative_lookahead<Pat>(_pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
+            unimplemented!()
         }
-        .insert_whitespace(call("Whitespace")),
-    );
+        fn _scannerless_lexical_grammar<Pat>() -> Grammar<Pat>
+        where
+            Pat: Clone
+                + From<&'static str>
+                + From<std::ops::RangeInclusive<char>>
+                + From<std::ops::RangeFull>,
+        {
+            grammar! {
+                Whitespace = {
+                    {{
+                        " " | "\t" | "\n" | "\r" |
+                        { "//" {{ {!"\n"} .. }*} "\n" } |
+                        { "/*" {{ {!"*/"} .. }*} "*/" }
+                    }*}
+                    {!" "} {!"\t"} {!"\n"} {!"\r"} {!"//"} {!"/*"}
+                };
+                Shebang = { "#!" {{ {!"\n"} .. }*} "\n" };
+                FileStart = {Shebang?};
+                FileEnd = Whitespace;
+
+                IdentStart = {'a'..='z'} | {'A'..='Z'} | "_";
+                IdentCont = IdentStart | {'0'..='9'};
+                NotIdent = { {!'a'..='z'} {!'A'..='Z'} {!"_"} {!'0'..='9'} };
+                Ident = { IdentStart {IdentCont*} NotIdent };
+
+                StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
+                CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
+                Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
+            }
+        }
+        // grammar = grammar.insert_whitespace(call("Whitespace"));
+        // grammar.extend(_scannerless_lexical_grammar());
+        unimplemented!()
+    }
 
     grammar
 }
