@@ -64,12 +64,10 @@ impl<Pat> Grammar<Pat> {
                     // FIXME(cad97) this will insert too many whitespace rules
                     // A* %% B => ???
                     // Currently, A* %% (WS B WS), which allows trailing whitespace incorrectly
-                    Some((sep, SepKind::Trailing)) => {
-                        elem.fold(self).repeat_more(Some((
-                            self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
-                            SepKind::Trailing,
-                        )))
-                    }
+                    Some((sep, SepKind::Trailing)) => elem.fold(self).repeat_more(Some((
+                        self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
+                        SepKind::Trailing,
+                    ))),
                 }
             }
             fn fold_repeat_more(
