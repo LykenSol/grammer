@@ -127,12 +127,6 @@ pub fn eat<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
         fields: OrderMap::new(),
     }
 }
-pub fn negative_lookahead<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
-    RuleWithNamedFields {
-        rule: Rc::new(Rule::NegativeLookahead(pat.into())),
-        fields: OrderMap::new(),
-    }
-}
 pub fn call<Pat>(name: &str) -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
         rule: Rc::new(Rule::Call(name.to_string())),
@@ -315,7 +309,6 @@ pub enum SepKind {
 pub enum Rule<Pat> {
     Empty,
     Eat(Pat),
-    NegativeLookahead(Pat),
     Call(String),
 
     Concat([Rc<Rule<Pat>>; 2]),
@@ -338,7 +331,6 @@ impl<Pat> Rule<Pat> {
         match self {
             Rule::Empty
             | Rule::Eat(_)
-            | Rule::NegativeLookahead(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => false,
@@ -388,9 +380,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         grammar: &Grammar<Pat>,
     ) -> MaybeKnown<bool> {
         match self {
-            Rule::Empty | Rule::NegativeLookahead(_) | Rule::Opt(_) | Rule::RepeatMany(..) => {
-                MaybeKnown::Known(true)
-            }
+            Rule::Empty | Rule::Opt(_) | Rule::RepeatMany(..) => MaybeKnown::Known(true),
             Rule::Eat(pat) => pat.matches_empty(),
             Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar),
             Rule::Concat([left, right]) => {
@@ -409,7 +399,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         grammar: &Grammar<Pat>,
     ) {
         match self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {}
+            Rule::Empty | Rule::Eat(_) | Rule::Call(_) => {}
             Rule::Concat([left, right]) => {
                 left.check_non_empty_opt(cache, grammar);
                 right.check_non_empty_opt(cache, grammar);
@@ -435,7 +425,7 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
 
     fn check_call_names(&self, grammar: &Grammar<Pat>) {
         match self {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) => {}
+            Rule::Empty | Rule::Eat(_) => {}
             Rule::Call(rule) => {
                 assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
             }
@@ -579,9 +569,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
             fields: self.filter_fields(Some(i)).collect(),
         };
         let mut rule = match &*self.rule {
-            Rule::Empty | Rule::Eat(_) | Rule::NegativeLookahead(_) | Rule::Call(_) => {
-                return folder.fold_leaf(self)
-            }
+            Rule::Empty | Rule::Eat(_) | Rule::Call(_) => return folder.fold_leaf(self),
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
             }
@@ -668,7 +656,6 @@ where
         Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
         Primary =
             {Eat:Pattern} |
-            {NegativeLookahead:{ "!" {pat:Pattern} }} |
             {Call:Ident} |
             {Group:{ "{" {{or:Or}?} "}" }};
         Modifier =
@@ -703,6 +690,10 @@ where
         });
     } else {
         // HACK(eddyb) keeping the scannerless version around for posterity.
+        #[allow(unused)]
+        fn negative_lookahead<Pat>(_pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
+            unimplemented!()
+        }
         fn _scannerless_lexical_grammar<Pat>() -> Grammar<Pat>
         where
             Pat: Clone
