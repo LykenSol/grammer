@@ -609,10 +609,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
 /// Construct a (meta-)grammar for parsing a grammar.
 pub fn grammar_grammar<Pat>() -> Grammar<Pat>
 where
-    Pat: Clone
-        + From<&'static str>
-        + From<std::ops::RangeInclusive<char>>
-        + From<std::ops::RangeFull>,
+    Pat: Clone + From<&'static str>,
 {
     // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
     macro_rules! rule {
@@ -662,57 +659,84 @@ where
         })
     }
 
+    // Main grammar.
     let mut grammar = grammar! {
-        // Lexical grammar.
-        Whitespace = {
-            {{
-                " " | "\t" | "\n" | "\r" |
-                { "//" {{ {!"\n"} .. }*} "\n" } |
-                { "/*" {{ {!"*/"} .. }*} "*/" }
-            }*}
-            {!" "} {!"\t"} {!"\n"} {!"\r"} {!"//"} {!"/*"}
-        };
-        Shebang = { "#!" {{ {!"\n"} .. }*} "\n" };
-
-        IdentStart = {'a'..='z'} | {'A'..='Z'} | "_";
-        IdentCont = IdentStart | {'0'..='9'};
-        NotIdent = { {!'a'..='z'} {!'A'..='Z'} {!"_"} {!'0'..='9'} };
-        Ident = { IdentStart {IdentCont*} NotIdent };
-
-        StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
-        CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
-        Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
+        Grammar = { FileStart {rules:{RuleDef*}} FileEnd };
+        RuleDef = { {name:Ident} "=" {rule:Or} ";" };
+        Or = {{"|"?} {rules:{Concat+ % "|"}}};
+        Concat = {rules:{Rule+}};
+        Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
+        Primary =
+            {Eat:Pattern} |
+            {NegativeLookahead:{ "!" {pat:Pattern} }} |
+            {Call:Ident} |
+            {Group:{ "{" {{or:Or}?} "}" }};
+        Modifier =
+            {Opt:"?"} |
+            {Repeat:{ {repeat:Repeat} {{ {kind:SepKind} {sep:Primary} }?} }};
+        Repeat =
+            {Many:"*"} |
+            {More:"+"};
+        SepKind =
+            {Simple:"%"} |
+            // HACK(eddyb) should be "%%", but `rustc`'s `proc_macro` server doesn't
+            // always preserve jointness, except within multi-character Rust operators.
+            {Trailing:{"%" "%"}};
+        Pattern =
+            {Str:StrLit} |
+            {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
+            {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
     };
 
-    grammar.extend(
-        grammar! {
-            // Main grammar.
-            Grammar = { {Shebang?} {rules:{RuleDef*}} Whitespace };
-            RuleDef = { {name:Ident} "=" {rule:Or} ";" };
-            Or = {{"|"?} {rules:{Concat+ % "|"}}};
-            Concat = {rules:{Rule+}};
-            Rule = { {{ {field:Ident} ":" }?} {rule:Primary} {{modifier:Modifier}?} };
-            Primary =
-                {Eat:Pattern} |
-                {NegativeLookahead:{ "!" {pat:Pattern} }} |
-                {Call:Ident} |
-                {Group:{ "{" {{or:Or}?} "}" }};
-            Modifier =
-                {Opt:"?"} |
-                {Repeat:{ {repeat:Repeat} {{ {kind:SepKind} {sep:Primary} }?} }};
-            Repeat =
-                {Many:"*"} |
-                {More:"+"};
-            SepKind =
-                {Simple:"%"} |
-                {Trailing:{"%" "%"}}; // HACK(CAD97): should be "%%" once gll no longer string roundtrips
-            Pattern =
-                {Str:StrLit} |
-                {CharRange:{ {{start:CharLit}?} ".." {{end:CharLit}?} }} |
-                {CharRangeInclusive:{ {{start:CharLit}?} "..=" {end:CharLit} }};
+    // Lexical fragment of the grammar.
+    let proc_macro = true;
+    if proc_macro {
+        grammar.extend(grammar! {
+            FileStart = "";
+            FileEnd = "";
+
+            Ident = IDENT;
+
+            // FIXME(eddyb) restrict literals, once `proc_macro` allows it.
+            StrLit = LITERAL;
+            CharLit = LITERAL;
+        });
+    } else {
+        // HACK(eddyb) keeping the scannerless version around for posterity.
+        fn _scannerless_lexical_grammar<Pat>() -> Grammar<Pat>
+        where
+            Pat: Clone
+                + From<&'static str>
+                + From<std::ops::RangeInclusive<char>>
+                + From<std::ops::RangeFull>,
+        {
+            grammar! {
+                Whitespace = {
+                    {{
+                        " " | "\t" | "\n" | "\r" |
+                        { "//" {{ {!"\n"} .. }*} "\n" } |
+                        { "/*" {{ {!"*/"} .. }*} "*/" }
+                    }*}
+                    {!" "} {!"\t"} {!"\n"} {!"\r"} {!"//"} {!"/*"}
+                };
+                Shebang = { "#!" {{ {!"\n"} .. }*} "\n" };
+                FileStart = {Shebang?};
+                FileEnd = Whitespace;
+
+                IdentStart = {'a'..='z'} | {'A'..='Z'} | "_";
+                IdentCont = IdentStart | {'0'..='9'};
+                NotIdent = { {!'a'..='z'} {!'A'..='Z'} {!"_"} {!'0'..='9'} };
+                Ident = { IdentStart {IdentCont*} NotIdent };
+
+                StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
+                CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
+                Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
+            }
         }
-        .insert_whitespace(call("Whitespace")),
-    );
+        // grammar = grammar.insert_whitespace(call("Whitespace"));
+        // grammar.extend(_scannerless_lexical_grammar());
+        unimplemented!()
+    }
 
     grammar
 }
