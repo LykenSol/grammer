@@ -1,6 +1,6 @@
 #![deny(rust_2018_idioms)]
 
-use ordermap::{orderset, OrderMap, OrderSet};
+use indexmap::{indexset, IndexMap, IndexSet};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -9,13 +9,13 @@ use std::ops::{Add, BitAnd, BitOr};
 use std::rc::Rc;
 
 pub struct Grammar<Pat> {
-    pub rules: OrderMap<String, RuleWithNamedFields<Pat>>,
+    pub rules: IndexMap<String, RuleWithNamedFields<Pat>>,
 }
 
 impl<Pat> Grammar<Pat> {
     pub fn new() -> Self {
         Grammar {
-            rules: OrderMap::new(),
+            rules: IndexMap::new(),
         }
     }
     pub fn define(&mut self, name: &str, rule: RuleWithNamedFields<Pat>) {
@@ -110,25 +110,25 @@ impl<Pat> Grammar<Pat> {
 #[derive(Clone)]
 pub struct RuleWithNamedFields<Pat> {
     pub rule: Rc<Rule<Pat>>,
-    pub fields: OrderMap<String, OrderSet<Vec<usize>>>,
+    pub fields: IndexMap<String, IndexSet<Vec<usize>>>,
 }
 
 pub fn empty<Pat>() -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
         rule: Rc::new(Rule::Empty),
-        fields: OrderMap::new(),
+        fields: IndexMap::new(),
     }
 }
 pub fn eat<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
         rule: Rc::new(Rule::Eat(pat.into())),
-        fields: OrderMap::new(),
+        fields: IndexMap::new(),
     }
 }
 pub fn call<Pat>(name: &str) -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
         rule: Rc::new(Rule::Call(name.to_string())),
-        fields: OrderMap::new(),
+        fields: IndexMap::new(),
     }
 }
 
@@ -142,7 +142,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
             Rule::Opt(_) => vec![0],
             _ => vec![],
         };
-        self.fields.insert(name.to_string(), orderset![path]);
+        self.fields.insert(name.to_string(), indexset![path]);
         self
     }
     pub fn opt(mut self) -> Self {
@@ -269,7 +269,7 @@ impl<Pat> BitOr for RuleWithNamedFields<Pat> {
     fn bitor(self, other: Self) -> Self {
         let (old_rules, this, mut fields) = match &*self.rule {
             Rule::Or(rules) => (&rules[..], None, self.fields),
-            _ => (&[][..], Some(self), OrderMap::new()),
+            _ => (&[][..], Some(self), IndexMap::new()),
         };
 
         let new_rules =
@@ -278,7 +278,7 @@ impl<Pat> BitOr for RuleWithNamedFields<Pat> {
                 .enumerate()
                 .map(|(i, rule)| {
                     for (name, paths) in rule.fields {
-                        fields.entry(name).or_insert_with(OrderSet::new).extend(
+                        fields.entry(name).or_insert_with(IndexSet::new).extend(
                             paths.into_iter().map(|mut path| {
                                 path.insert(0, old_rules.len() + i);
                                 path
@@ -318,7 +318,7 @@ pub enum Rule<Pat> {
 }
 
 impl<Pat> Rule<Pat> {
-    pub fn field_pathset_is_refutable(&self, paths: &OrderSet<Vec<usize>>) -> bool {
+    pub fn field_pathset_is_refutable(&self, paths: &IndexSet<Vec<usize>>) -> bool {
         if paths.len() > 1 {
             true
         } else {
@@ -541,9 +541,9 @@ impl<Pat> RuleWithNamedFields<Pat> {
     fn filter_fields<'a>(
         &'a self,
         field: Option<usize>,
-    ) -> impl Iterator<Item = (String, OrderSet<Vec<usize>>)> + 'a {
+    ) -> impl Iterator<Item = (String, IndexSet<Vec<usize>>)> + 'a {
         self.fields.iter().filter_map(move |(name, paths)| {
-            let paths: OrderSet<_> = paths
+            let paths: IndexSet<_> = paths
                 .iter()
                 .filter_map(move |path| {
                     if path.first().cloned() == field {
