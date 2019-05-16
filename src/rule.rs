@@ -72,15 +72,9 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 .collect(),
         }
     }
-    pub fn repeat_many(self, sep: Option<(Self, SepKind)>) -> Self {
-        if let Some((sep, _)) = &sep {
-            assert!(sep.fields.is_empty());
-        }
+    pub fn repeat_many(self) -> Self {
         RuleWithNamedFields {
-            rule: Rc::new(Rule::RepeatMany(
-                self.rule,
-                sep.map(|(sep, kind)| (sep.rule, kind)),
-            )),
+            rule: Rc::new(Rule::RepeatMany(self.rule, None)),
             fields: self
                 .fields
                 .into_iter()
@@ -88,15 +82,31 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 .collect(),
         }
     }
-    pub fn repeat_more(self, sep: Option<(Self, SepKind)>) -> Self {
-        if let Some((sep, _)) = &sep {
-            assert!(sep.fields.is_empty());
-        }
+    pub fn repeat_many_sep(self, sep: Self, kind: SepKind) -> Self {
+        assert!(sep.fields.is_empty());
         RuleWithNamedFields {
-            rule: Rc::new(Rule::RepeatMore(
-                self.rule,
-                sep.map(|(sep, kind)| (sep.rule, kind)),
-            )),
+            rule: Rc::new(Rule::RepeatMany(self.rule, Some((sep.rule, kind)))),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .collect(),
+        }
+    }
+    pub fn repeat_more(self) -> Self {
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::RepeatMore(self.rule, None)),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .collect(),
+        }
+    }
+    pub fn repeat_more_sep(self, sep: Self, kind: SepKind) -> Self {
+        assert!(sep.fields.is_empty());
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::RepeatMore(self.rule, Some((sep.rule, kind)))),
             fields: self
                 .fields
                 .into_iter()
@@ -381,16 +391,24 @@ pub trait Folder<Pat>: Sized {
         elem: RuleWithNamedFields<Pat>,
         sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
     ) -> RuleWithNamedFields<Pat> {
-        elem.fold(self)
-            .repeat_many(sep.map(|(sep, kind)| (sep.fold(self), kind)))
+        let elem = elem.fold(self);
+        let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
+        match sep {
+            None => elem.repeat_many(),
+            Some((sep, kind)) => elem.repeat_many_sep(sep, kind),
+        }
     }
     fn fold_repeat_more(
         &mut self,
         elem: RuleWithNamedFields<Pat>,
         sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
     ) -> RuleWithNamedFields<Pat> {
-        elem.fold(self)
-            .repeat_more(sep.map(|(sep, kind)| (sep.fold(self), kind)))
+        let elem = elem.fold(self);
+        let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
+        match sep {
+            None => elem.repeat_more(),
+            Some((sep, kind)) => elem.repeat_more_sep(sep, kind),
+        }
     }
 }
 
@@ -477,23 +495,23 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 elem: RuleWithNamedFields<Pat>,
                 sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
             ) -> RuleWithNamedFields<Pat> {
+                let elem = elem.fold(self);
+                let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {
                     // A* => A* % WS
-                    None => elem
-                        .fold(self)
-                        .repeat_more(Some((self.whitespace.clone(), SepKind::Simple))),
+                    None => elem.repeat_more_sep(self.whitespace.clone(), SepKind::Simple),
                     // A* % B => A* % (WS B WS)
-                    Some((sep, SepKind::Simple)) => elem.fold(self).repeat_more(Some((
+                    Some((sep, SepKind::Simple)) => elem.repeat_more_sep(
                         self.whitespace.clone() + sep + self.whitespace.clone(),
                         SepKind::Simple,
-                    ))),
+                    ),
                     // FIXME(cad97) this will insert too many whitespace rules
                     // A* %% B => ???
                     // Currently, A* %% (WS B WS), which allows trailing whitespace incorrectly
-                    Some((sep, SepKind::Trailing)) => elem.fold(self).repeat_more(Some((
-                        self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
+                    Some((sep, SepKind::Trailing)) => elem.repeat_more_sep(
+                        self.whitespace.clone() + sep + self.whitespace.clone(),
                         SepKind::Trailing,
-                    ))),
+                    ),
                 }
             }
             fn fold_repeat_more(
@@ -501,22 +519,22 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 elem: RuleWithNamedFields<Pat>,
                 sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
             ) -> RuleWithNamedFields<Pat> {
+                let elem = elem.fold(self);
+                let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {
                     // A+ => A+ % WS
-                    None => elem
-                        .fold(self)
-                        .repeat_more(Some((self.whitespace.clone(), SepKind::Simple))),
+                    None => elem.repeat_more_sep(self.whitespace.clone(), SepKind::Simple),
                     // A+ % B => A+ % (WS B WS)
-                    Some((sep, SepKind::Simple)) => elem.fold(self).repeat_more(Some((
+                    Some((sep, SepKind::Simple)) => elem.fold(self).repeat_more_sep(
                         self.whitespace.clone() + sep + self.whitespace.clone(),
                         SepKind::Simple,
-                    ))),
+                    ),
                     // A+ %% B => A+ % (WS B WS) (WS B)?
                     Some((sep, SepKind::Trailing)) => {
-                        elem.fold(self).repeat_more(Some((
+                        elem.repeat_more_sep(
                             self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
                             SepKind::Simple,
-                        ))) + (self.whitespace.clone() + sep).opt()
+                        ) + (self.whitespace.clone() + sep).opt()
                     }
                 }
             }

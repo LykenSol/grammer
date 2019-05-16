@@ -79,13 +79,13 @@ where
             rule!($rule).opt()
         };
         ({ $elem:tt * }) => {
-            rule!($elem).repeat_many(None)
+            rule!($elem).repeat_many()
         };
         ({ $elem:tt + }) => {
-            rule!($elem).repeat_more(None)
+            rule!($elem).repeat_more()
         };
         ({ $elem:tt + % $sep:tt }) => {
-            rule!($elem).repeat_more(Some((rule!($sep), SepKind::Simple)))
+            rule!($elem).repeat_more_sep(rule!($sep), SepKind::Simple)
         };
         ({ $rule0:tt $(| $rule:tt)+ }) => {
             rule!($rule0) $(| rule!($rule))+
