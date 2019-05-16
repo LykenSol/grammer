@@ -10,7 +10,24 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct RuleWithNamedFields<Pat> {
     pub rule: Rc<Rule<Pat>>,
-    pub fields: IndexMap<IStr, IndexSet<Vec<usize>>>,
+    pub fields: IndexMap<IStr, FieldPathset>,
+}
+
+#[derive(Clone, Default)]
+pub struct FieldPathset(pub IndexSet<Vec<usize>>);
+
+impl FieldPathset {
+    fn prepend_all(self, i: usize) -> Self {
+        FieldPathset(
+            self.0
+                .into_iter()
+                .map(|mut path| {
+                    path.insert(0, i);
+                    path
+                })
+                .collect(),
+        )
+    }
 }
 
 pub fn empty<Pat>() -> RuleWithNamedFields<Pat> {
@@ -42,80 +59,50 @@ impl<Pat> RuleWithNamedFields<Pat> {
             Rule::Opt(_) => vec![0],
             _ => vec![],
         };
-        self.fields.insert(name, indexset![path]);
+        self.fields.insert(name, FieldPathset(indexset![path]));
         self
     }
-    pub fn opt(mut self) -> Self {
-        self.fields = self
-            .fields
-            .into_iter()
-            .map(|(name, paths)| {
-                (
-                    name,
-                    paths
-                        .into_iter()
-                        .map(|mut path| {
-                            path.insert(0, 0);
-                            path
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
-        self.rule = Rc::new(Rule::Opt(self.rule));
-        self
+    pub fn opt(self) -> Self {
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::Opt(self.rule)),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .collect(),
+        }
     }
-    pub fn repeat_many(mut self, sep: Option<(Self, SepKind)>) -> Self {
-        self.fields = self
-            .fields
-            .into_iter()
-            .map(|(name, paths)| {
-                (
-                    name,
-                    paths
-                        .into_iter()
-                        .map(|mut path| {
-                            path.insert(0, 0);
-                            path
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
+    pub fn repeat_many(self, sep: Option<(Self, SepKind)>) -> Self {
         if let Some((sep, _)) = &sep {
             assert!(sep.fields.is_empty());
         }
-        self.rule = Rc::new(Rule::RepeatMany(
-            self.rule,
-            sep.map(|(sep, kind)| (sep.rule, kind)),
-        ));
-        self
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::RepeatMany(
+                self.rule,
+                sep.map(|(sep, kind)| (sep.rule, kind)),
+            )),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .collect(),
+        }
     }
-    pub fn repeat_more(mut self, sep: Option<(Self, SepKind)>) -> Self {
-        self.fields = self
-            .fields
-            .into_iter()
-            .map(|(name, paths)| {
-                (
-                    name,
-                    paths
-                        .into_iter()
-                        .map(|mut path| {
-                            path.insert(0, 0);
-                            path
-                        })
-                        .collect(),
-                )
-            })
-            .collect();
+    pub fn repeat_more(self, sep: Option<(Self, SepKind)>) -> Self {
         if let Some((sep, _)) = &sep {
             assert!(sep.fields.is_empty());
         }
-        self.rule = Rc::new(Rule::RepeatMore(
-            self.rule,
-            sep.map(|(sep, kind)| (sep.rule, kind)),
-        ));
-        self
+        RuleWithNamedFields {
+            rule: Rc::new(Rule::RepeatMore(
+                self.rule,
+                sep.map(|(sep, kind)| (sep.rule, kind)),
+            )),
+            fields: self
+                .fields
+                .into_iter()
+                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .collect(),
+        }
     }
 }
 
@@ -132,32 +119,12 @@ impl<Pat> Add for RuleWithNamedFields<Pat> {
         self.fields = self
             .fields
             .into_iter()
-            .map(|(name, paths)| {
-                (
-                    name,
-                    paths
-                        .into_iter()
-                        .map(|mut path| {
-                            path.insert(0, 0);
-                            path
-                        })
-                        .collect(),
-                )
-            })
+            .map(|(name, paths)| (name, paths.prepend_all(0)))
             .collect();
         for (name, paths) in other.fields {
             // FIXME(eddyb) uncomment once we have `Context` in scope.
             // assert!(!self.fields.contains_key(&name), "duplicate field {}", cx[name]);
-            self.fields.insert(
-                name,
-                paths
-                    .into_iter()
-                    .map(|mut path| {
-                        path.insert(0, 1);
-                        path
-                    })
-                    .collect(),
-            );
+            self.fields.insert(name, paths.prepend_all(1));
         }
         self.rule = Rc::new(Rule::Concat([self.rule, other.rule]));
         self
@@ -173,22 +140,21 @@ impl<Pat> BitOr for RuleWithNamedFields<Pat> {
             _ => (&[][..], Some(self), IndexMap::new()),
         };
 
-        let new_rules =
-            this.into_iter()
-                .chain(iter::once(other))
-                .enumerate()
-                .map(|(i, rule)| {
-                    for (name, paths) in rule.fields {
-                        fields.entry(name).or_insert_with(IndexSet::new).extend(
-                            paths.into_iter().map(|mut path| {
-                                path.insert(0, old_rules.len() + i);
-                                path
-                            }),
-                        );
-                    }
+        let new_rules = this
+            .into_iter()
+            .chain(iter::once(other))
+            .enumerate()
+            .map(|(i, rule)| {
+                for (name, paths) in rule.fields {
+                    fields
+                        .entry(name)
+                        .or_default()
+                        .0
+                        .extend(paths.prepend_all(old_rules.len() + i).0);
+                }
 
-                    rule.rule
-                });
+                rule.rule
+            });
         let rules = old_rules.iter().cloned().chain(new_rules).collect();
 
         RuleWithNamedFields {
@@ -219,11 +185,11 @@ pub enum Rule<Pat> {
 }
 
 impl<Pat> Rule<Pat> {
-    pub fn field_pathset_is_refutable(&self, paths: &IndexSet<Vec<usize>>) -> bool {
-        if paths.len() > 1 {
+    pub fn field_pathset_is_refutable(&self, paths: &FieldPathset) -> bool {
+        if paths.0.len() > 1 {
             true
         } else {
-            self.field_is_refutable(paths.get_index(0).unwrap())
+            self.field_is_refutable(paths.0.get_index(0).unwrap())
         }
     }
     pub fn field_is_refutable(&self, path: &[usize]) -> bool {
@@ -433,9 +399,10 @@ impl<Pat> RuleWithNamedFields<Pat> {
     fn filter_fields<'a>(
         &'a self,
         field: Option<usize>,
-    ) -> impl Iterator<Item = (IStr, IndexSet<Vec<usize>>)> + 'a {
+    ) -> impl Iterator<Item = (IStr, FieldPathset)> + 'a {
         self.fields.iter().filter_map(move |(&name, paths)| {
             let paths: IndexSet<_> = paths
+                .0
                 .iter()
                 .filter_map(move |path| {
                     if path.first().cloned() == field {
@@ -446,7 +413,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 })
                 .collect();
             if !paths.is_empty() {
-                Some((name, paths))
+                Some((name, FieldPathset(paths)))
             } else {
                 None
             }
