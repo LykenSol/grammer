@@ -24,7 +24,11 @@ impl<Pat> Grammar<Pat> {
     pub fn extend(&mut self, other: Self) {
         self.rules.extend(other.rules);
     }
-    pub fn insert_whitespace(self, whitespace: rule::RuleWithNamedFields<Pat>) -> Self
+    pub fn insert_whitespace(
+        self,
+        cx: &mut Context<Pat>,
+        whitespace: rule::RuleWithNamedFields<Pat>,
+    ) -> Self
     where
         Pat: Clone,
     {
@@ -32,7 +36,7 @@ impl<Pat> Grammar<Pat> {
             rules: self
                 .rules
                 .into_iter()
-                .map(|(name, rule)| (name, rule.insert_whitespace(whitespace.clone())))
+                .map(|(name, rule)| (name, rule.insert_whitespace(cx, whitespace.clone())))
                 .collect(),
         }
     }
@@ -70,10 +74,10 @@ where
             negative_lookahead($start..=$end)
         };
         ($rule:ident) => {
-            call(cx.intern(stringify!($rule)))
+            call(stringify!($rule))
         };
         ({ $name:ident : $rule:tt }) => {
-            rule!($rule).field(cx.intern(stringify!($name)))
+            rule!($rule).field(stringify!($name))
         };
         ({ $rule:tt ? }) => {
             rule!($rule).opt()
@@ -101,7 +105,10 @@ where
     macro_rules! grammar {
         ($($rule_name:ident = $($rule:tt)|+;)*) => ({
             let mut grammar = Grammar::new();
-            $(grammar.define(cx.intern(stringify!($rule_name)), rule!({ $($rule)|+ }));)*
+            $(grammar.define(
+                cx.intern(stringify!($rule_name)),
+                rule!({ $($rule)|+ }).finish(cx),
+            );)*
             grammar
         })
     }
