@@ -1,3 +1,4 @@
+use crate::context::{Context, IStr};
 use indexmap::{indexset, IndexMap, IndexSet};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use std::rc::Rc;
 #[derive(Clone)]
 pub struct RuleWithNamedFields<Pat> {
     pub rule: Rc<Rule<Pat>>,
-    pub fields: IndexMap<String, IndexSet<Vec<usize>>>,
+    pub fields: IndexMap<IStr, IndexSet<Vec<usize>>>,
 }
 
 pub fn empty<Pat>() -> RuleWithNamedFields<Pat> {
@@ -24,15 +25,15 @@ pub fn eat<Pat>(pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
         fields: IndexMap::new(),
     }
 }
-pub fn call<Pat>(name: &str) -> RuleWithNamedFields<Pat> {
+pub fn call<Pat>(name: IStr) -> RuleWithNamedFields<Pat> {
     RuleWithNamedFields {
-        rule: Rc::new(Rule::Call(name.to_string())),
+        rule: Rc::new(Rule::Call(name)),
         fields: IndexMap::new(),
     }
 }
 
 impl<Pat> RuleWithNamedFields<Pat> {
-    pub fn field(mut self, name: &str) -> Self {
+    pub fn field(mut self, name: IStr) -> Self {
         let path = match &*self.rule {
             Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match **rule {
                 Rule::Eat(_) | Rule::Call(_) => vec![],
@@ -41,7 +42,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
             Rule::Opt(_) => vec![0],
             _ => vec![],
         };
-        self.fields.insert(name.to_string(), indexset![path]);
+        self.fields.insert(name, indexset![path]);
         self
     }
     pub fn opt(mut self) -> Self {
@@ -145,7 +146,8 @@ impl<Pat> Add for RuleWithNamedFields<Pat> {
             })
             .collect();
         for (name, paths) in other.fields {
-            assert!(!self.fields.contains_key(&name), "duplicate field {}", name);
+            // FIXME(eddyb) uncomment once we have `Context` in scope.
+            // assert!(!self.fields.contains_key(&name), "duplicate field {}", cx[name]);
             self.fields.insert(
                 name,
                 paths
@@ -206,7 +208,7 @@ pub enum SepKind {
 pub enum Rule<Pat> {
     Empty,
     Eat(Pat),
-    Call(String),
+    Call(IStr),
 
     Concat([Rc<Rule<Pat>>; 2]),
     Or(Vec<Rc<Rule<Pat>>>),
@@ -320,26 +322,30 @@ impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
         }
     }
 
-    pub(crate) fn check_call_names(&self, grammar: &crate::Grammar<Pat>) {
+    pub(crate) fn check_call_names(&self, cx: &Context<Pat>, grammar: &crate::Grammar<Pat>) {
         match self {
             Rule::Empty | Rule::Eat(_) => {}
             Rule::Call(rule) => {
-                assert!(grammar.rules.contains_key(rule), "no rule named `{}`", rule);
+                assert!(
+                    grammar.rules.contains_key(rule),
+                    "no rule named `{}`",
+                    cx[*rule]
+                );
             }
             Rule::Concat([left, right]) => {
-                left.check_call_names(grammar);
-                right.check_call_names(grammar);
+                left.check_call_names(cx, grammar);
+                right.check_call_names(cx, grammar);
             }
             Rule::Or(rules) => {
                 for rule in rules {
-                    rule.check_call_names(grammar);
+                    rule.check_call_names(cx, grammar);
                 }
             }
-            Rule::Opt(rule) => rule.check_call_names(grammar),
+            Rule::Opt(rule) => rule.check_call_names(cx, grammar),
             Rule::RepeatMany(elem, sep) | Rule::RepeatMore(elem, sep) => {
-                elem.check_call_names(grammar);
+                elem.check_call_names(cx, grammar);
                 if let Some((sep, _)) = sep {
-                    sep.check_call_names(grammar);
+                    sep.check_call_names(cx, grammar);
                 }
             }
         }
@@ -427,8 +433,8 @@ impl<Pat> RuleWithNamedFields<Pat> {
     fn filter_fields<'a>(
         &'a self,
         field: Option<usize>,
-    ) -> impl Iterator<Item = (String, IndexSet<Vec<usize>>)> + 'a {
-        self.fields.iter().filter_map(move |(name, paths)| {
+    ) -> impl Iterator<Item = (IStr, IndexSet<Vec<usize>>)> + 'a {
+        self.fields.iter().filter_map(move |(&name, paths)| {
             let paths: IndexSet<_> = paths
                 .iter()
                 .filter_map(move |path| {
@@ -440,7 +446,7 @@ impl<Pat> RuleWithNamedFields<Pat> {
                 })
                 .collect();
             if !paths.is_empty() {
-                Some((name.clone(), paths))
+                Some((name, paths))
             } else {
                 None
             }

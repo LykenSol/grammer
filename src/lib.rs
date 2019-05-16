@@ -1,13 +1,15 @@
 #![deny(rust_2018_idioms)]
 
+use crate::context::{Context, IStr};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::hash::Hash;
 
+pub mod context;
 pub mod rule;
 
 pub struct Grammar<Pat> {
-    pub rules: IndexMap<String, rule::RuleWithNamedFields<Pat>>,
+    pub rules: IndexMap<IStr, rule::RuleWithNamedFields<Pat>>,
 }
 
 impl<Pat> Grammar<Pat> {
@@ -16,8 +18,8 @@ impl<Pat> Grammar<Pat> {
             rules: IndexMap::new(),
         }
     }
-    pub fn define(&mut self, name: &str, rule: rule::RuleWithNamedFields<Pat>) {
-        self.rules.insert(name.to_string(), rule);
+    pub fn define(&mut self, name: IStr, rule: rule::RuleWithNamedFields<Pat>) {
+        self.rules.insert(name, rule);
     }
     pub fn extend(&mut self, other: Self) {
         self.rules.extend(other.rules);
@@ -37,9 +39,9 @@ impl<Pat> Grammar<Pat> {
 }
 
 impl<Pat: Ord + Hash + rule::MatchesEmpty> Grammar<Pat> {
-    pub fn check(&self) {
+    pub fn check(&self, cx: &Context<Pat>) {
         for rule in self.rules.values() {
-            rule.rule.check_call_names(self);
+            rule.rule.check_call_names(cx, self);
         }
 
         let mut can_be_empty_cache = HashMap::new();
@@ -50,7 +52,7 @@ impl<Pat: Ord + Hash + rule::MatchesEmpty> Grammar<Pat> {
 }
 
 /// Construct a (meta-)grammar for parsing a grammar.
-pub fn grammar_grammar<Pat>() -> Grammar<Pat>
+pub fn grammar_grammar<Pat>(cx: &mut Context<Pat>) -> Grammar<Pat>
 where
     Pat: Clone + From<&'static str>,
 {
@@ -68,10 +70,10 @@ where
             negative_lookahead($start..=$end)
         };
         ($rule:ident) => {
-            call(stringify!($rule))
+            call(cx.intern(stringify!($rule)))
         };
         ({ $name:ident : $rule:tt }) => {
-            rule!($rule).field(stringify!($name))
+            rule!($rule).field(cx.intern(stringify!($name)))
         };
         ({ $rule:tt ? }) => {
             rule!($rule).opt()
@@ -99,7 +101,7 @@ where
     macro_rules! grammar {
         ($($rule_name:ident = $($rule:tt)|+;)*) => ({
             let mut grammar = Grammar::new();
-            $(grammar.define(stringify!($rule_name), rule!({ $($rule)|+ }));)*
+            $(grammar.define(cx.intern(stringify!($rule_name)), rule!({ $($rule)|+ }));)*
             grammar
         })
     }
@@ -133,58 +135,16 @@ where
     };
 
     // Lexical fragment of the grammar.
-    let proc_macro = true;
-    if proc_macro {
-        grammar.extend(grammar! {
-            FileStart = "";
-            FileEnd = "";
+    grammar.extend(grammar! {
+        FileStart = "";
+        FileEnd = "";
 
-            Ident = IDENT;
+        Ident = IDENT;
 
-            // FIXME(eddyb) restrict literals, once `proc_macro` allows it.
-            StrLit = LITERAL;
-            CharLit = LITERAL;
-        });
-    } else {
-        // HACK(eddyb) keeping the scannerless version around for posterity.
-        #[allow(unused)]
-        fn negative_lookahead<Pat>(_pat: impl Into<Pat>) -> RuleWithNamedFields<Pat> {
-            unimplemented!()
-        }
-        fn _scannerless_lexical_grammar<Pat>() -> Grammar<Pat>
-        where
-            Pat: Clone
-                + From<&'static str>
-                + From<std::ops::RangeInclusive<char>>
-                + From<std::ops::RangeFull>,
-        {
-            grammar! {
-                Whitespace = {
-                    {{
-                        " " | "\t" | "\n" | "\r" |
-                        { "//" {{ {!"\n"} .. }*} "\n" } |
-                        { "/*" {{ {!"*/"} .. }*} "*/" }
-                    }*}
-                    {!" "} {!"\t"} {!"\n"} {!"\r"} {!"//"} {!"/*"}
-                };
-                Shebang = { "#!" {{ {!"\n"} .. }*} "\n" };
-                FileStart = {Shebang?};
-                FileEnd = Whitespace;
-
-                IdentStart = {'a'..='z'} | {'A'..='Z'} | "_";
-                IdentCont = IdentStart | {'0'..='9'};
-                NotIdent = { {!'a'..='z'} {!'A'..='Z'} {!"_"} {!'0'..='9'} };
-                Ident = { IdentStart {IdentCont*} NotIdent };
-
-                StrLit = { "\"" {{ { {!"\\"} {!"\""} .. } | { "\\" Escape } }*} "\"" };
-                CharLit = { "'" { { {!"\\"} {!"'"} .. } | { "\\" Escape } } "'" };
-                Escape = "t" | "n" | "r" | "\\" | "'" | "\"";
-            }
-        }
-        // grammar = grammar.insert_whitespace(call("Whitespace"));
-        // grammar.extend(_scannerless_lexical_grammar());
-        unimplemented!()
-    }
+        // FIXME(eddyb) restrict literals, once `proc_macro` allows it.
+        StrLit = LITERAL;
+        CharLit = LITERAL;
+    });
 
     grammar
 }
