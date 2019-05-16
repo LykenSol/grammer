@@ -1,6 +1,6 @@
 use indexmap::IndexSet;
 use std::convert::TryInto;
-use std::marker::PhantomData;
+use std::hash::Hash;
 
 /// Context object with global resources for working with grammar,
 /// such as interners.
@@ -32,15 +32,13 @@ macro_rules! interners {
     ($($name:ident => $ty:ty),* $(,)?) => {
         #[allow(non_snake_case)]
         struct Interners<Pat> {
-            $($name: IndexSet<$ty>,)*
-            _marker: PhantomData<Pat>,
+            $($name: IndexSet<$ty>),*
         }
 
         impl<Pat> Default for Interners<Pat> {
             fn default() -> Self {
                 Interners {
-                    $($name: IndexSet::new(),)*
-                    _marker: PhantomData,
+                    $($name: IndexSet::new()),*
                 }
             }
         }
@@ -49,7 +47,7 @@ macro_rules! interners {
             #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
             pub struct $name(u32);
 
-            impl<Pat> InternInCx<Pat> for $ty {
+            impl<Pat: Eq + Hash> InternInCx<Pat> for $ty {
                 type Interned = $name;
 
                 fn intern_in_cx(self, cx: &mut Context<Pat>) -> Self::Interned {
@@ -70,9 +68,10 @@ macro_rules! interners {
 
 interners! {
     IStr => String,
+    IRule => crate::rule::Rule<Pat>,
 }
 
-impl<Pat> InternInCx<Pat> for &'_ str {
+impl<Pat: Eq + Hash> InternInCx<Pat> for &'_ str {
     type Interned = IStr;
 
     fn intern_in_cx(self, cx: &mut Context<Pat>) -> IStr {

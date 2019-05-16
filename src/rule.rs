@@ -1,15 +1,14 @@
-use crate::context::{Context, IStr};
+use crate::context::{Context, IRule, IStr};
 use indexmap::{indexset, IndexMap, IndexSet};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::iter;
 use std::ops::{Add, BitAnd, BitOr};
-use std::rc::Rc;
 
 #[derive(Clone)]
-pub struct RuleWithNamedFields<Pat> {
-    pub rule: Rc<Rule<Pat>>,
+pub struct RuleWithNamedFields {
+    pub rule: IRule,
     pub fields: IndexMap<IStr, FieldPathset>,
 }
 
@@ -45,8 +44,8 @@ mod build {
         fn start(self) -> Self::Out;
     }
 
-    impl<Pat> Start for RuleWithNamedFields<Pat> {
-        type Out = RuleWithNamedFields<Pat>;
+    impl Start for RuleWithNamedFields {
+        type Out = RuleWithNamedFields;
 
         fn start(self) -> Self::Out {
             self
@@ -54,21 +53,21 @@ mod build {
     }
 
     pub trait Finish<Pat> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat>;
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields;
     }
 
-    impl<Pat> Finish<Pat> for RuleWithNamedFields<Pat> {
-        fn finish(self, _cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat> Finish<Pat> for RuleWithNamedFields {
+        fn finish(self, _cx: &mut Context<Pat>) -> RuleWithNamedFields {
             self
         }
     }
 
     pub struct Empty;
 
-    impl<Pat> Finish<Pat> for Empty {
-        fn finish(self, _cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash> Finish<Pat> for Empty {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Empty),
+                rule: cx.intern(Rule::Empty),
                 fields: IndexMap::new(),
             }
         }
@@ -76,10 +75,10 @@ mod build {
 
     pub struct Eat<Pat>(Pat);
 
-    impl<Pat> Finish<Pat> for Eat<Pat> {
-        fn finish(self, _cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash> Finish<Pat> for Eat<Pat> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Eat(self.0)),
+                rule: cx.intern(Rule::Eat(self.0)),
                 fields: IndexMap::new(),
             }
         }
@@ -87,10 +86,11 @@ mod build {
 
     pub struct Call<'a>(&'a str);
 
-    impl<Pat> Finish<Pat> for Call<'_> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash> Finish<Pat> for Call<'_> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
+            let name = cx.intern(self.0);
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Call(cx.intern(self.0))),
+                rule: cx.intern(Rule::Call(name)),
                 fields: IndexMap::new(),
             }
         }
@@ -98,12 +98,12 @@ mod build {
 
     pub struct Field<'a, R>(R, &'a str);
 
-    impl<Pat, R: Finish<Pat>> Finish<Pat> for Field<'_, R> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, R: Finish<Pat>> Finish<Pat> for Field<'_, R> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let mut rule = self.0.finish(cx);
             let name = cx.intern(self.1);
-            let path = match &*rule.rule {
-                Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match **rule {
+            let path = match cx[rule.rule] {
+                Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match cx[rule] {
                     Rule::Eat(_) | Rule::Call(_) => vec![],
                     _ => unimplemented!(),
                 },
@@ -117,11 +117,11 @@ mod build {
 
     pub struct Opt<R>(R);
 
-    impl<Pat, R: Finish<Pat>> Finish<Pat> for Opt<R> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, R: Finish<Pat>> Finish<Pat> for Opt<R> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let rule = self.0.finish(cx);
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Opt(rule.rule)),
+                rule: cx.intern(Rule::Opt(rule.rule)),
                 fields: rule
                     .fields
                     .into_iter()
@@ -133,11 +133,11 @@ mod build {
 
     pub struct RepeatMany<E>(E);
 
-    impl<Pat, E: Finish<Pat>> Finish<Pat> for RepeatMany<E> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, E: Finish<Pat>> Finish<Pat> for RepeatMany<E> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             RuleWithNamedFields {
-                rule: Rc::new(Rule::RepeatMany(elem.rule, None)),
+                rule: cx.intern(Rule::RepeatMany(elem.rule, None)),
                 fields: elem
                     .fields
                     .into_iter()
@@ -149,13 +149,13 @@ mod build {
 
     pub struct RepeatManySep<E, S>(E, S, SepKind);
 
-    impl<Pat, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatManySep<E, S> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatManySep<E, S> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
             assert!(sep.fields.is_empty());
             RuleWithNamedFields {
-                rule: Rc::new(Rule::RepeatMany(elem.rule, Some((sep.rule, self.2)))),
+                rule: cx.intern(Rule::RepeatMany(elem.rule, Some((sep.rule, self.2)))),
                 fields: elem
                     .fields
                     .into_iter()
@@ -167,11 +167,11 @@ mod build {
 
     pub struct RepeatMore<E>(E);
 
-    impl<Pat, E: Finish<Pat>> Finish<Pat> for RepeatMore<E> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, E: Finish<Pat>> Finish<Pat> for RepeatMore<E> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             RuleWithNamedFields {
-                rule: Rc::new(Rule::RepeatMore(elem.rule, None)),
+                rule: cx.intern(Rule::RepeatMore(elem.rule, None)),
                 fields: elem
                     .fields
                     .into_iter()
@@ -183,13 +183,13 @@ mod build {
 
     pub struct RepeatMoreSep<E, S>(E, S, SepKind);
 
-    impl<Pat, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatMoreSep<E, S> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatMoreSep<E, S> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
             assert!(sep.fields.is_empty());
             RuleWithNamedFields {
-                rule: Rc::new(Rule::RepeatMore(elem.rule, Some((sep.rule, self.2)))),
+                rule: cx.intern(Rule::RepeatMore(elem.rule, Some((sep.rule, self.2)))),
                 fields: elem
                     .fields
                     .into_iter()
@@ -201,12 +201,12 @@ mod build {
 
     pub struct Concat<A, B>(A, B);
 
-    impl<Pat, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Concat<A, B> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Concat<A, B> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let a = self.0.finish(cx);
             let b = self.1.finish(cx);
 
-            match (&*a.rule, &*b.rule) {
+            match (&cx[a.rule], &cx[b.rule]) {
                 (Rule::Empty, _) if a.fields.is_empty() => return b,
                 (_, Rule::Empty) if b.fields.is_empty() => return a,
                 _ => {}
@@ -222,7 +222,7 @@ mod build {
                 fields.insert(name, paths.prepend_all(1));
             }
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Concat([a.rule, b.rule])),
+                rule: cx.intern(Rule::Concat([a.rule, b.rule])),
                 fields,
             }
         }
@@ -230,13 +230,13 @@ mod build {
 
     pub struct Or<A, B>(A, B);
 
-    impl<Pat, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Or<A, B> {
-        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat> {
+    impl<Pat: Eq + Hash, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Or<A, B> {
+        fn finish(self, cx: &mut Context<Pat>) -> RuleWithNamedFields {
             let a = self.0.finish(cx);
             let b = self.1.finish(cx);
 
-            let (old_rules, a, mut fields) = match &*a.rule {
-                Rule::Or(rules) => (&rules[..], None, a.fields),
+            let (old_rules, a, mut fields) = match cx[a.rule] {
+                Rule::Or(ref rules) => (&rules[..], None, a.fields),
                 _ => (&[][..], Some(a), IndexMap::new()),
             };
 
@@ -258,7 +258,7 @@ mod build {
             let rules = old_rules.iter().cloned().chain(new_rules).collect();
 
             RuleWithNamedFields {
-                rule: Rc::new(Rule::Or(rules)),
+                rule: cx.intern(Rule::Or(rules)),
                 fields,
             }
         }
@@ -276,7 +276,7 @@ mod build {
     }
 
     impl<R> Build<R> {
-        pub fn finish<Pat>(self, cx: &mut Context<Pat>) -> RuleWithNamedFields<Pat>
+        pub fn finish<Pat>(self, cx: &mut Context<Pat>) -> RuleWithNamedFields
         where
             R: Finish<Pat>,
         {
@@ -353,7 +353,7 @@ mod build {
     }
 
     builder_impls!(impl<R> Build<R>);
-    builder_impls!(impl<Pat> RuleWithNamedFields<Pat>);
+    builder_impls!(impl<> RuleWithNamedFields);
 }
 
 pub use self::build::{call, eat, empty};
@@ -370,133 +370,120 @@ pub enum Rule<Pat> {
     Eat(Pat),
     Call(IStr),
 
-    Concat([Rc<Rule<Pat>>; 2]),
-    Or(Vec<Rc<Rule<Pat>>>),
+    Concat([IRule; 2]),
+    Or(Vec<IRule>),
 
-    Opt(Rc<Rule<Pat>>),
-    RepeatMany(Rc<Rule<Pat>>, Option<(Rc<Rule<Pat>>, SepKind)>),
-    RepeatMore(Rc<Rule<Pat>>, Option<(Rc<Rule<Pat>>, SepKind)>),
+    Opt(IRule),
+    RepeatMany(IRule, Option<(IRule, SepKind)>),
+    RepeatMore(IRule, Option<(IRule, SepKind)>),
 }
 
-impl<Pat> Rule<Pat> {
-    pub fn field_pathset_is_refutable(&self, paths: &FieldPathset) -> bool {
+impl IRule {
+    pub fn field_pathset_is_refutable<Pat>(self, cx: &Context<Pat>, paths: &FieldPathset) -> bool {
         if paths.0.len() > 1 {
             true
         } else {
-            self.field_is_refutable(paths.0.get_index(0).unwrap())
+            self.field_is_refutable(cx, paths.0.get_index(0).unwrap())
         }
     }
-    pub fn field_is_refutable(&self, path: &[usize]) -> bool {
-        match self {
+
+    pub fn field_is_refutable<Pat>(self, cx: &Context<Pat>, path: &[usize]) -> bool {
+        match cx[self] {
             Rule::Empty
             | Rule::Eat(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => false,
-            Rule::Concat(rules) => rules[path[0]].field_is_refutable(&path[1..]),
+            Rule::Concat(rules) => rules[path[0]].field_is_refutable(cx, &path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
         }
     }
-}
 
-// FIXME(eddyb) this should just work with `self: &Rc<Self>` on inherent methods,
-// but that still requires `#![feature(arbitrary_self_types)]`.
-trait RcRuleMethods<Pat>: Sized {
-    fn can_be_empty(
-        &self,
+    fn can_be_empty<Pat: MatchesEmpty>(
+        self,
         cache: &mut HashMap<Self, MaybeKnown<bool>>,
-        grammar: &crate::Grammar<Pat>,
-    ) -> MaybeKnown<bool>;
-}
-
-impl<Pat: Ord + Hash + MatchesEmpty> RcRuleMethods<Pat> for Rc<Rule<Pat>> {
-    fn can_be_empty(
-        &self,
-        cache: &mut HashMap<Self, MaybeKnown<bool>>,
-        grammar: &crate::Grammar<Pat>,
+        cx: &Context<Pat>,
+        grammar: &crate::Grammar,
     ) -> MaybeKnown<bool> {
-        match cache.entry(self.clone()) {
+        match cache.entry(self) {
             Entry::Occupied(entry) => return *entry.get(),
             Entry::Vacant(entry) => {
                 entry.insert(MaybeKnown::Unknown);
             }
         };
-        let r = self.can_be_empty_uncached(cache, grammar);
+        let r = match cx[self] {
+            Rule::Empty | Rule::Opt(_) | Rule::RepeatMany(..) => MaybeKnown::Known(true),
+            Rule::Eat(ref pat) => pat.matches_empty(),
+            Rule::Call(rule) => grammar.rules[&rule].rule.can_be_empty(cache, cx, grammar),
+            Rule::Concat([left, right]) => {
+                left.can_be_empty(cache, cx, grammar) & right.can_be_empty(cache, cx, grammar)
+            }
+            Rule::Or(ref rules) => rules.iter().fold(MaybeKnown::Known(false), |prev, rule| {
+                prev | rule.can_be_empty(cache, cx, grammar)
+            }),
+            Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, cx, grammar),
+        };
         match r {
-            MaybeKnown::Known(_) => *cache.get_mut(self).unwrap() = r,
+            MaybeKnown::Known(_) => *cache.get_mut(&self).unwrap() = r,
             MaybeKnown::Unknown => {
-                cache.remove(self);
+                cache.remove(&self);
             }
         }
         r
     }
-}
 
-impl<Pat: Ord + Hash + MatchesEmpty> Rule<Pat> {
-    fn can_be_empty_uncached(
-        &self,
-        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
-        grammar: &crate::Grammar<Pat>,
-    ) -> MaybeKnown<bool> {
-        match self {
-            Rule::Empty | Rule::Opt(_) | Rule::RepeatMany(..) => MaybeKnown::Known(true),
-            Rule::Eat(pat) => pat.matches_empty(),
-            Rule::Call(rule) => grammar.rules[rule].rule.can_be_empty(cache, grammar),
-            Rule::Concat([left, right]) => {
-                left.can_be_empty(cache, grammar) & right.can_be_empty(cache, grammar)
-            }
-            Rule::Or(rules) => rules.iter().fold(MaybeKnown::Known(false), |prev, rule| {
-                prev | rule.can_be_empty(cache, grammar)
-            }),
-            Rule::RepeatMore(elem, _) => elem.can_be_empty(cache, grammar),
-        }
-    }
-
-    pub(crate) fn check_non_empty_opt(
-        &self,
-        cache: &mut HashMap<Rc<Self>, MaybeKnown<bool>>,
-        grammar: &crate::Grammar<Pat>,
+    pub(crate) fn check_non_empty_opt<Pat: MatchesEmpty>(
+        self,
+        cache: &mut HashMap<IRule, MaybeKnown<bool>>,
+        cx: &Context<Pat>,
+        grammar: &crate::Grammar,
     ) {
-        match self {
+        match cx[self] {
             Rule::Empty | Rule::Eat(_) | Rule::Call(_) => {}
             Rule::Concat([left, right]) => {
-                left.check_non_empty_opt(cache, grammar);
-                right.check_non_empty_opt(cache, grammar);
+                left.check_non_empty_opt(cache, cx, grammar);
+                right.check_non_empty_opt(cache, cx, grammar);
             }
-            Rule::Or(rules) => {
+            Rule::Or(ref rules) => {
                 for rule in rules {
-                    rule.check_non_empty_opt(cache, grammar);
+                    rule.check_non_empty_opt(cache, cx, grammar);
                 }
             }
             Rule::Opt(rule) => {
-                assert_eq!(rule.can_be_empty(cache, grammar), MaybeKnown::Known(false));
-                rule.check_non_empty_opt(cache, grammar)
+                assert_eq!(
+                    rule.can_be_empty(cache, cx, grammar),
+                    MaybeKnown::Known(false)
+                );
+                rule.check_non_empty_opt(cache, cx, grammar)
             }
             Rule::RepeatMany(elem, sep) | Rule::RepeatMore(elem, sep) => {
-                assert_eq!(elem.can_be_empty(cache, grammar), MaybeKnown::Known(false));
-                elem.check_non_empty_opt(cache, grammar);
+                assert_eq!(
+                    elem.can_be_empty(cache, cx, grammar),
+                    MaybeKnown::Known(false)
+                );
+                elem.check_non_empty_opt(cache, cx, grammar);
                 if let Some((sep, _)) = sep {
-                    sep.check_non_empty_opt(cache, grammar);
+                    sep.check_non_empty_opt(cache, cx, grammar);
                 }
             }
         }
     }
 
-    pub(crate) fn check_call_names(&self, cx: &Context<Pat>, grammar: &crate::Grammar<Pat>) {
-        match self {
+    pub(crate) fn check_call_names<Pat>(self, cx: &Context<Pat>, grammar: &crate::Grammar) {
+        match cx[self] {
             Rule::Empty | Rule::Eat(_) => {}
             Rule::Call(rule) => {
                 assert!(
-                    grammar.rules.contains_key(rule),
+                    grammar.rules.contains_key(&rule),
                     "no rule named `{}`",
-                    cx[*rule]
+                    cx[rule]
                 );
             }
             Rule::Concat([left, right]) => {
                 left.check_call_names(cx, grammar);
                 right.check_call_names(cx, grammar);
             }
-            Rule::Or(rules) => {
+            Rule::Or(ref rules) => {
                 for rule in rules {
                     rule.check_call_names(cx, grammar);
                 }
@@ -548,33 +535,33 @@ pub trait MatchesEmpty {
     fn matches_empty(&self) -> MaybeKnown<bool>;
 }
 
-pub trait Folder<Pat>: Sized {
+pub trait Folder<Pat: Eq + Hash>: Sized {
     fn cx(&mut self) -> &mut Context<Pat>;
-    fn fold_leaf(&mut self, rule: RuleWithNamedFields<Pat>) -> RuleWithNamedFields<Pat> {
+    fn fold_leaf(&mut self, rule: RuleWithNamedFields) -> RuleWithNamedFields {
         rule
     }
     fn fold_concat(
         &mut self,
-        left: RuleWithNamedFields<Pat>,
-        right: RuleWithNamedFields<Pat>,
-    ) -> RuleWithNamedFields<Pat> {
+        left: RuleWithNamedFields,
+        right: RuleWithNamedFields,
+    ) -> RuleWithNamedFields {
         (left.fold(self) + right.fold(self)).finish(self.cx())
     }
     fn fold_or(
         &mut self,
-        mut rules: impl Iterator<Item = RuleWithNamedFields<Pat>>,
-    ) -> RuleWithNamedFields<Pat> {
+        mut rules: impl Iterator<Item = RuleWithNamedFields>,
+    ) -> RuleWithNamedFields {
         let first = rules.next().unwrap().fold(self);
         rules.fold(first, |or, rule| (or | rule.fold(self)).finish(self.cx()))
     }
-    fn fold_opt(&mut self, rule: RuleWithNamedFields<Pat>) -> RuleWithNamedFields<Pat> {
+    fn fold_opt(&mut self, rule: RuleWithNamedFields) -> RuleWithNamedFields {
         rule.fold(self).opt().finish(self.cx())
     }
     fn fold_repeat_many(
         &mut self,
-        elem: RuleWithNamedFields<Pat>,
-        sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
-    ) -> RuleWithNamedFields<Pat> {
+        elem: RuleWithNamedFields,
+        sep: Option<(RuleWithNamedFields, SepKind)>,
+    ) -> RuleWithNamedFields {
         let elem = elem.fold(self);
         let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
         match sep {
@@ -584,9 +571,9 @@ pub trait Folder<Pat>: Sized {
     }
     fn fold_repeat_more(
         &mut self,
-        elem: RuleWithNamedFields<Pat>,
-        sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
-    ) -> RuleWithNamedFields<Pat> {
+        elem: RuleWithNamedFields,
+        sep: Option<(RuleWithNamedFields, SepKind)>,
+    ) -> RuleWithNamedFields {
         let elem = elem.fold(self);
         let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
         match sep {
@@ -596,7 +583,7 @@ pub trait Folder<Pat>: Sized {
     }
 }
 
-impl<Pat> RuleWithNamedFields<Pat> {
+impl RuleWithNamedFields {
     // HACK(eddyb) this is pretty expensive, find a better way
     fn filter_fields<'a>(
         &'a self,
@@ -622,52 +609,54 @@ impl<Pat> RuleWithNamedFields<Pat> {
         })
     }
 
-    pub fn fold(self, folder: &mut impl Folder<Pat>) -> Self {
-        let field_rule = |rule: &Rc<Rule<Pat>>, i| RuleWithNamedFields {
-            rule: rule.clone(),
+    pub fn fold<Pat: Eq + Hash>(self, folder: &mut impl Folder<Pat>) -> Self {
+        let field_rule = |rule, i| RuleWithNamedFields {
+            rule,
             fields: self.filter_fields(Some(i)).collect(),
         };
-        let mut rule = match &*self.rule {
+        let mut rule = match folder.cx()[self.rule] {
             Rule::Empty | Rule::Eat(_) | Rule::Call(_) => return folder.fold_leaf(self),
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
             }
-            Rule::Or(rules) => folder.fold_or(
-                rules
-                    .iter()
-                    .enumerate()
-                    .map(|(i, rule)| field_rule(rule, i)),
-            ),
+            Rule::Or(ref rules) => {
+                // FIXME(eddyb) this is inefficient, but we can't be iterating
+                // `rules` while folding, at least not without e.g. an arena.
+                let rules = rules.clone();
+                folder.fold_or(
+                    rules
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, rule)| field_rule(rule, i)),
+                )
+            }
             Rule::Opt(rule) => folder.fold_opt(field_rule(rule, 0)),
             Rule::RepeatMany(elem, sep) => folder.fold_repeat_many(
                 field_rule(elem, 0),
-                sep.as_ref().map(|(sep, kind)| (field_rule(sep, 1), *kind)),
+                sep.map(|(sep, kind)| (field_rule(sep, 1), kind)),
             ),
             Rule::RepeatMore(elem, sep) => folder.fold_repeat_more(
                 field_rule(elem, 0),
-                sep.as_ref().map(|(sep, kind)| (field_rule(sep, 1), *kind)),
+                sep.map(|(sep, kind)| (field_rule(sep, 1), kind)),
             ),
         };
         rule.fields.extend(self.filter_fields(None));
         rule
     }
 
-    pub fn insert_whitespace(
+    pub fn insert_whitespace<Pat: Eq + Hash>(
         self,
         cx: &mut Context<Pat>,
-        whitespace: RuleWithNamedFields<Pat>,
-    ) -> Self
-    where
-        Pat: Clone,
-    {
+        whitespace: RuleWithNamedFields,
+    ) -> Self {
         assert!(whitespace.fields.is_empty());
 
         struct WhitespaceInserter<'a, Pat> {
             cx: &'a mut Context<Pat>,
-            whitespace: RuleWithNamedFields<Pat>,
+            whitespace: RuleWithNamedFields,
         }
 
-        impl<Pat: Clone> Folder<Pat> for WhitespaceInserter<'_, Pat> {
+        impl<Pat: Eq + Hash> Folder<Pat> for WhitespaceInserter<'_, Pat> {
             fn cx(&mut self) -> &mut Context<Pat> {
                 self.cx
             }
@@ -677,16 +666,16 @@ impl<Pat> RuleWithNamedFields<Pat> {
             // `A? WS B`, which has an incorrect leading whitespace.
             fn fold_concat(
                 &mut self,
-                left: RuleWithNamedFields<Pat>,
-                right: RuleWithNamedFields<Pat>,
-            ) -> RuleWithNamedFields<Pat> {
+                left: RuleWithNamedFields,
+                right: RuleWithNamedFields,
+            ) -> RuleWithNamedFields {
                 (left.fold(self) + self.whitespace.clone() + right.fold(self)).finish(self.cx())
             }
             fn fold_repeat_many(
                 &mut self,
-                elem: RuleWithNamedFields<Pat>,
-                sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
-            ) -> RuleWithNamedFields<Pat> {
+                elem: RuleWithNamedFields,
+                sep: Option<(RuleWithNamedFields, SepKind)>,
+            ) -> RuleWithNamedFields {
                 let elem = elem.fold(self);
                 let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {
@@ -714,9 +703,9 @@ impl<Pat> RuleWithNamedFields<Pat> {
             }
             fn fold_repeat_more(
                 &mut self,
-                elem: RuleWithNamedFields<Pat>,
-                sep: Option<(RuleWithNamedFields<Pat>, SepKind)>,
-            ) -> RuleWithNamedFields<Pat> {
+                elem: RuleWithNamedFields,
+                sep: Option<(RuleWithNamedFields, SepKind)>,
+            ) -> RuleWithNamedFields {
                 let elem = elem.fold(self);
                 let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {

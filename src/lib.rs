@@ -8,30 +8,27 @@ use std::hash::Hash;
 pub mod context;
 pub mod rule;
 
-pub struct Grammar<Pat> {
-    pub rules: IndexMap<IStr, rule::RuleWithNamedFields<Pat>>,
+pub struct Grammar {
+    pub rules: IndexMap<IStr, rule::RuleWithNamedFields>,
 }
 
-impl<Pat> Grammar<Pat> {
+impl Grammar {
     pub fn new() -> Self {
         Grammar {
             rules: IndexMap::new(),
         }
     }
-    pub fn define(&mut self, name: IStr, rule: rule::RuleWithNamedFields<Pat>) {
+    pub fn define(&mut self, name: IStr, rule: rule::RuleWithNamedFields) {
         self.rules.insert(name, rule);
     }
     pub fn extend(&mut self, other: Self) {
         self.rules.extend(other.rules);
     }
-    pub fn insert_whitespace(
+    pub fn insert_whitespace<Pat: Eq + Hash>(
         self,
         cx: &mut Context<Pat>,
-        whitespace: rule::RuleWithNamedFields<Pat>,
-    ) -> Self
-    where
-        Pat: Clone,
-    {
+        whitespace: rule::RuleWithNamedFields,
+    ) -> Self {
         Grammar {
             rules: self
                 .rules
@@ -42,24 +39,22 @@ impl<Pat> Grammar<Pat> {
     }
 }
 
-impl<Pat: Ord + Hash + rule::MatchesEmpty> Grammar<Pat> {
-    pub fn check(&self, cx: &Context<Pat>) {
+impl Grammar {
+    pub fn check<Pat: rule::MatchesEmpty>(&self, cx: &Context<Pat>) {
         for rule in self.rules.values() {
             rule.rule.check_call_names(cx, self);
         }
 
         let mut can_be_empty_cache = HashMap::new();
         for rule in self.rules.values() {
-            rule.rule.check_non_empty_opt(&mut can_be_empty_cache, self);
+            rule.rule
+                .check_non_empty_opt(&mut can_be_empty_cache, cx, self);
         }
     }
 }
 
 /// Construct a (meta-)grammar for parsing a grammar.
-pub fn grammar_grammar<Pat>(cx: &mut Context<Pat>) -> Grammar<Pat>
-where
-    Pat: Clone + From<&'static str>,
-{
+pub fn grammar_grammar<Pat: Eq + Hash + From<&'static str>>(cx: &mut Context<Pat>) -> Grammar {
     use crate::rule::*;
 
     // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.
