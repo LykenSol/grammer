@@ -13,4 +13,4 @@ readme = "README.md"
 description = "Grammar framework."
 
 [dependencies]
-ordermap = "0.3.0"
+indexmap = "1"
