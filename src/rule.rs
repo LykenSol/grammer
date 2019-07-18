@@ -1,7 +1,9 @@
 use crate::context::{Context, IRule, IStr};
+use crate::forest::NodeShape;
 use indexmap::{indexmap, IndexMap};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 use std::iter;
 use std::ops::{Add, BitAnd, BitOr};
@@ -405,6 +407,74 @@ impl IRule {
             | Rule::RepeatMore(..) => false,
             Rule::Concat(rules) => rules[path[0]].field_path_is_refutable(cx, &path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
+        }
+    }
+
+    pub fn node_desc<Pat>(self, cx: &Context<Pat>) -> String
+    where
+        Pat: fmt::Debug,
+    {
+        match cx[self] {
+            Rule::Empty => "".to_string(),
+            Rule::Eat(ref pat) => format!("{:?}", pat),
+            Rule::Call(r) => cx[r].to_string(),
+            Rule::Concat([left, right]) => {
+                format!("({} {})", left.node_desc(cx), right.node_desc(cx))
+            }
+            Rule::Or(ref cases) => {
+                assert!(cases.len() > 1);
+                let mut desc = format!("({}", cases[0].node_desc(cx));
+                for rule in &cases[1..] {
+                    desc += " | ";
+                    desc += &rule.node_desc(cx);
+                }
+                desc + ")"
+            }
+            Rule::Opt(rule) => format!("{}?", rule.node_desc(cx)),
+            Rule::RepeatMany(elem, None) => format!("{}*", elem.node_desc(cx)),
+            Rule::RepeatMany(elem, Some((sep, SepKind::Simple))) => {
+                format!("{}* % {}", elem.node_desc(cx), sep.node_desc(cx))
+            }
+            Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))) => {
+                format!("{}* %% {}", elem.node_desc(cx), sep.node_desc(cx))
+            }
+            Rule::RepeatMore(elem, None) => format!("{}+", elem.node_desc(cx)),
+            Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
+                format!("{}+ % {}", elem.node_desc(cx), sep.node_desc(cx))
+            }
+            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
+                format!("{}+ %% {}", elem.node_desc(cx), sep.node_desc(cx))
+            }
+        }
+    }
+
+    pub fn node_shape<Pat: Eq + Hash>(
+        self,
+        cx: &mut Context<Pat>,
+        named_rules: Option<&IndexMap<IStr, RuleWithNamedFields>>,
+    ) -> NodeShape<Self> {
+        match cx[self] {
+            Rule::Empty | Rule::Eat(_) => NodeShape::Opaque,
+            Rule::Call(name) => match named_rules.map(|rules| &rules[&name]) {
+                Some(rule) if !rule.fields.is_empty() => NodeShape::Alias(rule.rule),
+                _ => NodeShape::Opaque,
+            },
+            Rule::Concat([left, right]) => NodeShape::Split(left, right),
+            Rule::Or(_) => NodeShape::Choice,
+            Rule::Opt(rule) => NodeShape::Opt(rule),
+            Rule::RepeatMany(elem, sep) => NodeShape::Opt(cx.intern(Rule::RepeatMore(elem, sep))),
+            Rule::RepeatMore(rule, None) => {
+                NodeShape::Split(rule, cx.intern(Rule::RepeatMany(rule, None)))
+            }
+            Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => {
+                let tail = cx.intern(Rule::Concat([sep, self]));
+                NodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
+            }
+            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => {
+                let many = cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))));
+                let tail = cx.intern(Rule::Concat([sep, many]));
+                NodeShape::Split(elem, cx.intern(Rule::Opt(tail)))
+            }
         }
     }
 
