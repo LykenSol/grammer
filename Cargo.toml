@@ -6,7 +6,7 @@ authors = [
     "Eduard-Mihai Burtescu <edy.burt@gmail.com>"
 ]
 edition = "2018"
-repository = "https://github.com/lykenware/grammer"
+repository = "https://github.com/LykenSol/grammer"
 license = "MIT/Apache-2.0"
 keywords = ["grammar"]
 readme = "README.md"

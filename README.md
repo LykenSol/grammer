@@ -1,6 +1,6 @@
 # Grammar framework
 
-[![Build Status](https://travis-ci.com/lykenware/grammer.svg?branch=master)](https://travis-ci.com/lykenware/grammer)
+[![Build Status](https://travis-ci.com/LykenSol/grammer.svg?branch=master)](https://travis-ci.com/LykenSol/grammer)
 [![Latest Version](https://img.shields.io/crates/v/grammer.svg)](https://crates.io/crates/grammer)
 [![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)](https://docs.rs/grammer)
 
