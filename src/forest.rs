@@ -6,6 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
+use std::iter;
 use std::str;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -241,9 +242,12 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
         }
     }
 
-    pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
+    pub fn dump_graphviz(&self, root: Option<Node<'i, G>>, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "digraph forest {{")?;
-        let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
+        let mut queue: VecDeque<_> = match root {
+            Some(root) => iter::once(root).collect(),
+            None => self.possibilities.keys().cloned().collect(),
+        };
         let mut seen: HashSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
         let node_name = |Node { kind, range }| {
@@ -301,6 +305,627 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
             }
         }
         writeln!(out, "}}")
+    }
+}
+
+pub mod dynamic {
+    use super::{
+        GrammarReflector, MoreThanOne, Node, NodeShape, OwnedParseForestAndNode, ParseForest,
+    };
+    use crate::context::{Context, IFields, IRule, IStr};
+    use crate::input::{Input, Range};
+    use crate::rule::{Fields, Rule};
+    use std::fmt;
+    use std::hash::Hash;
+    use std::rc::Rc;
+
+    pub struct CxAndGrammar<'a, Pat> {
+        pub cx: &'a Context<Pat>,
+        pub grammar: &'a crate::Grammar,
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug> GrammarReflector for CxAndGrammar<'_, Pat> {
+        type NodeKind = IRule;
+
+        fn node_shape(&self, rule: IRule) -> NodeShape<IRule> {
+            rule.node_shape(self.cx, Some(&self.grammar.rules))
+        }
+        fn node_shape_choice_get(&self, rule: IRule, i: usize) -> IRule {
+            match &self.cx[rule] {
+                Rule::Or(cases) => cases[i],
+                _ => unreachable!(),
+            }
+        }
+        fn node_desc(&self, rule: IRule) -> String {
+            rule.node_desc(self.cx)
+        }
+    }
+
+    // TODO(eddyb) remove this entirely, only user of it left is `ListHandle`.
+    #[derive(Clone)]
+    struct ExpandedTree<'i, G: GrammarReflector> {
+        node: Node<'i, G>,
+        kind: ExpandedTreeKind<'i, G>,
+    }
+
+    #[derive(Clone)]
+    enum ExpandedTreeKind<'i, G: GrammarReflector> {
+        Leaf,
+        Or(G::NodeKind, Rc<ExpandedTree<'i, G>>),
+        Opt(Option<Rc<ExpandedTree<'i, G>>>),
+        Concat([Rc<ExpandedTree<'i, G>>; 2]),
+    }
+
+    impl<'i, G: GrammarReflector> ExpandedTree<'i, G> {
+        fn one_from_node<I>(
+            forest: &ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+        ) -> Result<Rc<Self>, MoreThanOne>
+        where
+            I: Input,
+        {
+            let kind = match forest.grammar.node_shape(node.kind) {
+                NodeShape::Opaque | NodeShape::Alias(_) => ExpandedTreeKind::Leaf,
+                NodeShape::Choice(_) => {
+                    let child = forest.one_choice(node)?;
+                    ExpandedTreeKind::Or(child.kind, Self::one_from_node(forest, child)?)
+                }
+                NodeShape::Opt(_) => ExpandedTreeKind::Opt(match forest.unpack_opt(node) {
+                    Some(child) => Some(Self::one_from_node(forest, child)?),
+                    None => None,
+                }),
+                NodeShape::Split(..) => {
+                    let (left, right) = forest.one_split(node)?;
+                    ExpandedTreeKind::Concat([
+                        Self::one_from_node(forest, left)?,
+                        Self::one_from_node(forest, right)?,
+                    ])
+                }
+            };
+            Ok(Rc::new(ExpandedTree { node, kind }))
+        }
+
+        fn all_from_node<I>(forest: &ParseForest<'i, G, I>, node: Node<'i, G>) -> Vec<Rc<Self>>
+        where
+            I: Input,
+        {
+            let new = |kind| Rc::new(ExpandedTree { node, kind });
+            match forest.grammar.node_shape(node.kind) {
+                NodeShape::Opaque | NodeShape::Alias(_) => vec![new(ExpandedTreeKind::Leaf)],
+                NodeShape::Choice(_) => forest
+                    .all_choices(node)
+                    .flat_map(|child| {
+                        Self::all_from_node(forest, child)
+                            .into_iter()
+                            .map(move |child_tree| {
+                                new(ExpandedTreeKind::Or(child.kind, child_tree))
+                            })
+                    })
+                    .collect(),
+                NodeShape::Opt(_) => match forest.unpack_opt(node) {
+                    Some(child) => Self::all_from_node(forest, child)
+                        .into_iter()
+                        .map(|child_tree| new(ExpandedTreeKind::Opt(Some(child_tree))))
+                        .collect(),
+                    None => vec![new(ExpandedTreeKind::Opt(None))],
+                },
+                NodeShape::Split(..) => forest
+                    .all_splits(node)
+                    .flat_map(|(left, right)| {
+                        Self::all_from_node(forest, left)
+                            .into_iter()
+                            .flat_map(move |left_tree| {
+                                Self::all_from_node(forest, right).into_iter().map(
+                                    move |right_tree| {
+                                        new(ExpandedTreeKind::Concat([
+                                            left_tree.clone(),
+                                            right_tree,
+                                        ]))
+                                    },
+                                )
+                            })
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Ambiguity<T>(T);
+
+    pub struct OwnedHandle<'a, Pat: Eq + Hash + fmt::Debug, I: Input> {
+        pub forest_and_node: OwnedParseForestAndNode<CxAndGrammar<'a, Pat>, I>,
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> OwnedHandle<'_, Pat, I> {
+        pub fn source_info(&self) -> I::SourceInfo {
+            self.forest_and_node.unpack_ref(|_, forest_and_node| {
+                let (ref forest, node) = *forest_and_node;
+                forest.source_info(node.range)
+            })
+        }
+
+        pub fn with<R>(&self, f: impl FnOnce(Handle<'_, '_, '_, Pat, I>) -> R) -> R {
+            self.forest_and_node.unpack_ref(|_, forest_and_node| {
+                let (ref forest, node) = *forest_and_node;
+                f(Handle {
+                    forest,
+                    node,
+                    fields: None,
+                    disambiguator: None,
+                })
+            })
+        }
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> fmt::Debug for OwnedHandle<'_, Pat, I> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            self.with(|handle| handle.fmt(f))
+        }
+    }
+
+    // FIXME(eddyb) figure out how to maybe get rid of the 'a/'b split.
+    pub struct Handle<'a, 'b, 'i, Pat: Eq + Hash + fmt::Debug, I: Input> {
+        pub forest: &'a ParseForest<'i, CxAndGrammar<'b, Pat>, I>,
+        pub node: Node<'i, CxAndGrammar<'b, Pat>>,
+        pub fields: Option<IFields>,
+        // FIXME(eddyb) support an arbitrary number of disambiguations here
+        disambiguator: Option<(Node<'i, CxAndGrammar<'b, Pat>>, usize)>,
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> Copy for Handle<'_, '_, '_, Pat, I> {}
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> Clone for Handle<'_, '_, '_, Pat, I> {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> fmt::Debug for Handle<'_, '_, '_, Pat, I> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            struct FieldName<'a>(&'a str);
+            impl fmt::Debug for FieldName<'_> {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str(self.0)
+                }
+            }
+
+            self.source_info().fmt(f)?;
+
+            let cx = self.forest.grammar.cx;
+            let mut first = true;
+
+            let name = match cx[self.node.kind] {
+                Rule::RepeatMany(..) | Rule::RepeatMore(..) => {
+                    f.write_str(" => ")?;
+                    for x in self.all_lists() {
+                        if !first {
+                            f.write_str(" | ")?;
+                        }
+                        first = false;
+                        x.fmt(f)?;
+                    }
+                    return Ok(());
+                }
+                Rule::Call(name) => Some(name),
+                _ => None,
+            };
+
+            if self.fields.is_some() || name.is_some() {
+                f.write_str(" => ")?;
+                for x in self.all_records() {
+                    if !first {
+                        f.write_str(" | ")?;
+                    }
+                    first = false;
+
+                    if let Some(name) = name {
+                        f.write_str(&cx[name])?;
+                        f.write_str(" ")?;
+                    }
+
+                    let mut f = f.debug_map();
+                    x.visit_fields(&mut |r| match r {
+                        Ok((name, field)) => {
+                            f.entry(&FieldName(&cx[name]), &field);
+                        }
+                        Err(Ambiguity(handle)) => {
+                            // FIXME(eddyb) print this properly, similar to lists.
+                            // (will require reimplementing the `debug_map` adapter)
+                            f.entry(&FieldName(".."), &handle);
+                        }
+                    });
+                    f.finish()?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    impl<'a, 'b, 'i, Pat: Eq + Hash + fmt::Debug, I: Input> Handle<'a, 'b, 'i, Pat, I> {
+        pub fn source(self) -> &'a I::Slice {
+            self.forest.input(self.node.range)
+        }
+
+        pub fn source_info(self) -> I::SourceInfo {
+            self.forest.source_info(self.node.range)
+        }
+
+        // FIXME(eddyb) make this return an iterator or get rid of somehow.
+        fn all_records(self) -> Vec<Self> {
+            let forest = self.forest;
+            let cx = forest.grammar.cx;
+
+            let mut node = self.node;
+            let fields = self.fields.unwrap_or_else(|| match cx[node.kind] {
+                Rule::Call(name) => {
+                    if let NodeShape::Alias(inner) = forest.grammar.node_shape(node.kind) {
+                        node.kind = inner;
+                    }
+                    forest.grammar.grammar.rules[&name].fields
+                }
+                _ => unreachable!("not a record"),
+            });
+
+            let rec = |disambiguator: Option<usize>| Handle {
+                disambiguator: disambiguator.map(|i| (node, i)),
+                ..self
+            };
+
+            if let Fields::Aggregate(_) = cx[fields] {
+                match &cx[node.kind] {
+                    Rule::Concat(_) => {
+                        return forest
+                            .all_splits(node)
+                            .map(|(left, _)| rec(Some(left.range.len())))
+                            .collect()
+                    }
+                    Rule::Or(rules) => {
+                        return forest
+                            .all_choices(node)
+                            .map(|child| {
+                                // FIXME(eddyb) expose the index from the forest,
+                                // or integrate fielded traversal through the forest.
+                                let i = rules.iter().position(|&rule| child.kind == rule).unwrap();
+                                rec(Some(i))
+                            })
+                            .collect();
+                    }
+                    _ => {}
+                }
+            }
+            vec![rec(None)]
+        }
+
+        pub fn visit_fields(
+            &self,
+            f: &mut impl FnMut(
+                // FIXME(eddyb) maybe make the error case, or Ambiguity itself, an iterator?
+                // Maybe `Ambiguities<Self>` would be better? Same for list tails?
+                Result<(IStr, Self), Ambiguity<Self>>,
+            ),
+        ) {
+            let forest = self.forest;
+            let cx = forest.grammar.cx;
+
+            let mut node = self.node;
+            // FIXME(eddyb) remember the name here.
+            let fields = self.fields.unwrap_or_else(|| match cx[node.kind] {
+                Rule::Call(name) => {
+                    if let NodeShape::Alias(inner) = forest.grammar.node_shape(node.kind) {
+                        node.kind = inner;
+                    }
+                    forest.grammar.grammar.rules[&name].fields
+                }
+                _ => unreachable!("not a record"),
+            });
+
+            let children = match &cx[fields] {
+                Fields::Leaf(field) => {
+                    if let Some(field) = field {
+                        f(Ok((
+                            field.name,
+                            Handle {
+                                forest,
+                                node,
+                                fields: if cx[field.sub] == Fields::Leaf(None) {
+                                    // HACK(eddyb) figure out a nicer way to communicate leaves.
+                                    None
+                                } else {
+                                    Some(field.sub)
+                                },
+                                disambiguator: None,
+                            },
+                        )))
+                    }
+                    return;
+                }
+                Fields::Aggregate(children) => children,
+            };
+            let mut visit_child = |child, i| {
+                Handle {
+                    forest,
+                    node: child,
+                    fields: Some(children[i]),
+                    disambiguator: None,
+                }
+                .visit_fields(f);
+            };
+
+            match cx[node.kind] {
+                Rule::Concat([left_rule, right_rule]) => {
+                    let split = match self.disambiguator {
+                        Some((dis_node, dis_split)) if dis_node == node => {
+                            let (left, right, _) = node.range.split_at(dis_split);
+                            Ok((
+                                Node {
+                                    kind: left_rule,
+                                    range: Range(left),
+                                },
+                                Node {
+                                    kind: right_rule,
+                                    range: Range(right),
+                                },
+                            ))
+                        }
+                        _ => forest.one_split(node),
+                    };
+                    match split {
+                        Ok((left, right)) => {
+                            visit_child(left, 0);
+                            visit_child(right, 1);
+                        }
+                        Err(_) => return f(Err(Ambiguity(*self))),
+                    }
+                }
+                Rule::Or(ref rules) => {
+                    let choice = match self.disambiguator {
+                        Some((dis_node, dis_choice)) if dis_node == node => Ok(Node {
+                            kind: rules[dis_choice],
+                            range: node.range,
+                        }),
+                        _ => forest.one_choice(node),
+                    };
+                    match choice {
+                        Ok(child) => {
+                            // FIXME(eddyb) use `IndexSet<IRule>` in `Rule::Or`.
+                            let i = rules.iter().position(|&rule| child.kind == rule).unwrap();
+                            visit_child(child, i);
+                        }
+                        Err(_) => return f(Err(Ambiguity(*self))),
+                    }
+                }
+                Rule::Opt(_) => {
+                    if let Some(child) = forest.unpack_opt(node) {
+                        visit_child(child, 0);
+                    }
+                }
+                _ => unreachable!("not an aggregate"),
+            }
+        }
+
+        pub fn field(&self, name: IStr) -> Result<Option<Self>, Ambiguity<Self>> {
+            // FIXME(eddyb) speed this up somehow.
+            let mut found = None;
+            let mut ambiguity = None;
+            self.visit_fields(&mut |r| match r {
+                Ok((field_name, field)) => {
+                    if field_name == name {
+                        found = Some(field);
+                    }
+                }
+                Err(a) => {
+                    if ambiguity.is_none() {
+                        ambiguity = Some(a);
+                    }
+                }
+            });
+            match (found, ambiguity) {
+                (Some(field), _) => Ok(Some(field)),
+                (_, Some(ambiguity)) => Err(ambiguity),
+                _ => Ok(None),
+            }
+        }
+
+        pub fn field_by_str(&self, name: &str) -> Result<Option<Self>, Ambiguity<Self>> {
+            self.field(self.forest.grammar.cx.intern(name))
+        }
+
+        // FIXME(eddyb) maybe these should be deep?! then `ExpandedTree` shouldn't
+        // be controlled using `Alias` but something else (and maybe stop using `Alias`
+        // for `Repeat{Many,More}`?). This is all kinda tricky.
+        pub fn as_list(mut self) -> ListHandle<'a, 'b, 'i, Pat, I> {
+            assert_eq!(self.fields, None);
+            let tree = match self.forest.grammar.cx[self.node.kind] {
+                Rule::RepeatMany(..) => {
+                    // Can't be ambiguous, due to being `Opt`.
+                    self.node = self.forest.unpack_alias(self.node);
+                    ExpandedTree::one_from_node(self.forest, self.node).unwrap()
+                }
+                Rule::RepeatMore(..) => {
+                    // Might be ambiguous, fake it being a `Many`.
+                    // NOTE(eddyb) the unwrap is fine because we haven't done `unpack_alias`.
+                    let many = ExpandedTree::one_from_node(self.forest, self.node).unwrap();
+                    Rc::new(ExpandedTree {
+                        node: self.node,
+                        kind: ExpandedTreeKind::Opt(Some(many)),
+                    })
+                }
+                _ => unreachable!("not a list"),
+            };
+            ListHandle {
+                forest: self.forest,
+                tree,
+            }
+        }
+
+        // FIXME(eddyb) move to `ListHandle` *or* make deep.
+        fn all_lists(mut self) -> impl Iterator<Item = ListHandle<'a, 'b, 'i, Pat, I>> {
+            assert_eq!(self.fields, None);
+            match self.forest.grammar.cx[self.node.kind] {
+                Rule::RepeatMany(..) | Rule::RepeatMore(..) => {}
+                _ => unreachable!("not a list"),
+            }
+            self.node = self.forest.unpack_alias(self.node);
+            ExpandedTree::all_from_node(self.forest, self.node)
+                .into_iter()
+                .map(move |tree| ListHandle {
+                    forest: self.forest,
+                    tree,
+                })
+        }
+    }
+
+    pub struct ListHandle<'a, 'b, 'i, Pat: Eq + Hash + fmt::Debug, I: Input> {
+        pub forest: &'a ParseForest<'i, CxAndGrammar<'b, Pat>, I>,
+        tree: Rc<ExpandedTree<'i, CxAndGrammar<'b, Pat>>>,
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> Clone for ListHandle<'_, '_, '_, Pat, I> {
+        fn clone(&self) -> Self {
+            ListHandle {
+                forest: self.forest,
+                tree: self.tree.clone(),
+            }
+        }
+    }
+
+    impl<'a, 'b, 'i, Pat: Eq + Hash + fmt::Debug, I: Input> Iterator
+        for ListHandle<'a, 'b, 'i, Pat, I>
+    {
+        type Item = Result<Handle<'a, 'b, 'i, Pat, I>, Ambiguity<Handle<'a, 'b, 'i, Pat, I>>>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            match &self.tree.kind {
+                ExpandedTreeKind::Opt(Some(more)) => {
+                    let more = self.forest.unpack_alias(more.node);
+                    match ExpandedTree::one_from_node(self.forest, more) {
+                        Ok(more) => self.tree = more,
+                        Err(_) => {
+                            return Some(Err(Ambiguity(Handle {
+                                forest: self.forest,
+                                node: more,
+                                fields: None,
+                                disambiguator: None,
+                            })))
+                        }
+                    }
+                }
+                ExpandedTreeKind::Opt(None) => return None,
+                _ => {}
+            }
+            match &self.tree.kind {
+                ExpandedTreeKind::Concat([elem, tail]) => {
+                    let elem = Handle {
+                        forest: self.forest,
+                        node: elem.node,
+                        fields: None,
+                        disambiguator: None,
+                    };
+
+                    self.tree = tail.clone();
+                    loop {
+                        match &self.tree.kind {
+                            // HACK(eddyb) this only works because it's handled first
+                            // in the next `<Self as Iterator>::next` call, even if
+                            // it might be otherwise not the right rule.
+                            ExpandedTreeKind::Opt(None) => return Some(Ok(elem)),
+                            ExpandedTreeKind::Opt(Some(tail))
+                            | ExpandedTreeKind::Concat([_, tail]) => {
+                                self.tree = tail.clone();
+                            }
+                            ExpandedTreeKind::Leaf => {
+                                *self = Handle {
+                                    forest: self.forest,
+                                    node: self.tree.node,
+                                    fields: None,
+                                    disambiguator: None,
+                                }
+                                .as_list();
+                                return Some(Ok(elem));
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    impl<Pat: Eq + Hash + fmt::Debug, I: Input> fmt::Debug for ListHandle<'_, '_, '_, Pat, I> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            struct Spread<T>(T);
+            impl<T: fmt::Debug> fmt::Debug for Spread<T> {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                    f.write_str("...(")?;
+                    self.0.fmt(f)?;
+                    f.write_str(")")
+                }
+            }
+
+            let mut f = f.debug_list();
+            for x in self.clone() {
+                match x {
+                    Ok(elem) => {
+                        f.entry(&elem);
+                    }
+                    Err(Ambiguity(tail)) => {
+                        f.entry(&Spread(tail));
+                        break;
+                    }
+                }
+            }
+            f.finish()
+        }
+    }
+
+    // HACK(eddyb) work around `macro_rules` not being `use`-able.
+    pub use crate::__forest_dynamic_handle as handle;
+
+    #[macro_export]
+    macro_rules! __forest_dynamic_handle {
+        (let _ = $handle:expr) => {
+            let _ = $handle;
+        };
+        (let $x:ident = $handle:expr) => {
+            let $x = $handle;
+        };
+        (let { $($field:ident),* $(,)? } = $handle:expr) => {
+            let handle = &$handle;
+            $(handle!(let $field = handle.field_by_str(stringify!($field)).unwrap().unwrap());)*
+        };
+
+        (if let _ = $handle:ident $body:block) => {
+            match $handle { _ => $body }
+        };
+        (if let $x:ident = $handle:ident $body:block) => {
+            match $handle { $x => $body }
+        };
+        (if let {} = $handle:ident $body:block) => {
+            match $handle { _ => $body }
+        };
+        (if let { $field:ident: $pat:tt $(, $($rest:tt)*)? } = $handle:ident $body:block) => {
+            if let Some(x) = $handle.field_by_str(stringify!($field)).unwrap() {
+                handle!(if let $pat = x {
+                    handle!(if let { $($($rest)*)? } = $handle $body)
+                })
+            }
+        };
+        (if let { $field:ident $(,)? $(, $($rest:tt)*)? } = $handle:ident $body:block) => {
+            handle!(if let { $field: $field $(, $($rest)*)? } = $handle $body)
+        };
+
+        (match $handle:ident { $($pat:tt => $e:expr),* $(,)? }) => {
+            loop {
+                $(handle!(if let $pat = $handle {
+                    break $e;
+                });)*
+                #[allow(unreachable_code)] {
+                    unreachable!();
+                }
+            }
+        };
     }
 }
 

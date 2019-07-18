@@ -1,7 +1,7 @@
 use crate::input::{Input, InputMatch, Range};
-use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Span, TokenStream};
+use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Pat, Span, TokenStream};
 use indexing::{proof::Provable, Container, Index, Unknown};
-use std::ops;
+use std::ops::{self, Deref};
 
 impl Input for TokenStream {
     type Container = Vec<FlatToken>;
@@ -52,8 +52,20 @@ impl Input for TokenStream {
     }
 }
 
-impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
-    fn match_left(&self, pat: &[FlatTokenPat<&str>]) -> Option<usize> {
+// FIXME(eddyb) can't use `Pats: AsRef<[FlatTokenPat<S>]` as it doesn't constrain `S`.
+impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> InputMatch<Pat<Pats>>
+    for [FlatToken]
+{
+    fn match_left(&self, pat: &Pat<Pats>) -> Option<usize> {
+        self.match_left(&*pat.0)
+    }
+    fn match_right(&self, pat: &Pat<Pats>) -> Option<usize> {
+        self.match_right(&*pat.0)
+    }
+}
+
+impl<S: AsRef<str>> InputMatch<[FlatTokenPat<S>]> for [FlatToken] {
+    fn match_left(&self, pat: &[FlatTokenPat<S>]) -> Option<usize> {
         if self
             .iter()
             .zip(pat)
@@ -66,7 +78,7 @@ impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
             None
         }
     }
-    fn match_right(&self, pat: &[FlatTokenPat<&str>]) -> Option<usize> {
+    fn match_right(&self, pat: &[FlatTokenPat<S>]) -> Option<usize> {
         if self
             .iter()
             .zip(pat)

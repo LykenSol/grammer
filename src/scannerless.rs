@@ -1,3 +1,4 @@
+use crate::input::InputMatch;
 use crate::rule::{MatchesEmpty, MaybeKnown};
 use std::char;
 use std::fmt;
@@ -96,5 +97,32 @@ impl<S: AsRef<str>> MatchesEmpty for Pat<S> {
             Pat::String(s) => s.as_ref().is_empty(),
             Pat::Range(..) => false,
         })
+    }
+}
+
+impl<S, C: Copy> InputMatch<Pat<S, C>> for str
+where
+    str: InputMatch<S> + InputMatch<ops::RangeInclusive<C>>,
+{
+    fn match_left(&self, pat: &Pat<S, C>) -> Option<usize> {
+        match pat {
+            Pat::String(s) => self.match_left(s),
+            &Pat::Range(start, end) => self.match_left(&(start..=end)),
+        }
+    }
+    fn match_right(&self, pat: &Pat<S, C>) -> Option<usize> {
+        match pat {
+            Pat::String(s) => self.match_right(s),
+            &Pat::Range(start, end) => self.match_right(&(start..=end)),
+        }
+    }
+}
+
+impl InputMatch<String> for str {
+    fn match_left(&self, pat: &String) -> Option<usize> {
+        self.match_left(&pat[..])
+    }
+    fn match_right(&self, pat: &String) -> Option<usize> {
+        self.match_right(&pat[..])
     }
 }
