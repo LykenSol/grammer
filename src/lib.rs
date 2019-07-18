@@ -14,8 +14,6 @@ pub mod forest;
 #[forbid(unsafe_code)]
 pub mod input;
 #[forbid(unsafe_code)]
-pub mod parse_node;
-#[forbid(unsafe_code)]
 pub mod parser;
 #[forbid(unsafe_code)]
 pub mod proc_macro;
