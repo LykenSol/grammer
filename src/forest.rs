@@ -8,7 +8,7 @@ use std::io::{self, Write};
 use std::str;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ParseNodeShape<P> {
+pub enum NodeShape<P> {
     Opaque,
     Alias(P),
     Choice,
@@ -16,26 +16,26 @@ pub enum ParseNodeShape<P> {
     Split(P, P),
 }
 
-impl<P: fmt::Display> fmt::Display for ParseNodeShape<P> {
+impl<P: fmt::Display> fmt::Display for NodeShape<P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseNodeShape::Opaque => write!(f, "Opaque"),
-            ParseNodeShape::Alias(inner) => write!(f, "Alias({})", inner),
-            ParseNodeShape::Choice => write!(f, "Choice"),
-            ParseNodeShape::Opt(inner) => write!(f, "Opt({})", inner),
-            ParseNodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
+            NodeShape::Opaque => write!(f, "Opaque"),
+            NodeShape::Alias(inner) => write!(f, "Alias({})", inner),
+            NodeShape::Choice => write!(f, "Choice"),
+            NodeShape::Opt(inner) => write!(f, "Opt({})", inner),
+            NodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
         }
     }
 }
 
-impl<P> ParseNodeShape<P> {
-    pub fn map<Q>(self, mut f: impl FnMut(P) -> Q) -> ParseNodeShape<Q> {
+impl<P> NodeShape<P> {
+    pub fn map<Q>(self, mut f: impl FnMut(P) -> Q) -> NodeShape<Q> {
         match self {
-            ParseNodeShape::Opaque => ParseNodeShape::Opaque,
-            ParseNodeShape::Alias(inner) => ParseNodeShape::Alias(f(inner)),
-            ParseNodeShape::Choice => ParseNodeShape::Choice,
-            ParseNodeShape::Opt(inner) => ParseNodeShape::Opt(f(inner)),
-            ParseNodeShape::Split(left, right) => ParseNodeShape::Split(f(left), f(right)),
+            NodeShape::Opaque => NodeShape::Opaque,
+            NodeShape::Alias(inner) => NodeShape::Alias(f(inner)),
+            NodeShape::Choice => NodeShape::Choice,
+            NodeShape::Opt(inner) => NodeShape::Opt(f(inner)),
+            NodeShape::Split(left, right) => NodeShape::Split(f(left), f(right)),
         }
     }
 }
@@ -47,19 +47,19 @@ impl<P> ParseNodeShape<P> {
 /// all the information can be hardcoded, but in more dynamic settings, this
 /// might contain e.g. a reference to a context.
 pub trait GrammarReflector {
-    type ParseNodeKind: fmt::Debug + Ord + Hash + Copy;
+    type NodeKind: fmt::Debug + Ord + Hash + Copy;
 
-    fn parse_node_shape(&self, kind: Self::ParseNodeKind) -> ParseNodeShape<Self::ParseNodeKind>;
-    fn parse_node_desc(&self, kind: Self::ParseNodeKind) -> String;
+    fn node_shape(&self, kind: Self::NodeKind) -> NodeShape<Self::NodeKind>;
+    fn node_desc(&self, kind: Self::NodeKind) -> String;
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParseNode<'i, P> {
+pub struct Node<'i, P> {
     pub kind: P,
     pub range: Range<'i>,
 }
 
-impl<P: fmt::Debug> fmt::Debug for ParseNode<'_, P> {
+impl<P: fmt::Debug> fmt::Debug for Node<'_, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -76,17 +76,16 @@ pub struct ParseForest<'i, G: GrammarReflector, I: Input> {
     pub grammar: G,
     // HACK(eddyb) `pub(crate)` only for `parser`.
     pub(crate) input: Container<'i, I::Container>,
-    pub(crate) possible_choices:
-        HashMap<ParseNode<'i, G::ParseNodeKind>, BTreeSet<G::ParseNodeKind>>,
-    pub(crate) possible_splits: HashMap<ParseNode<'i, G::ParseNodeKind>, BTreeSet<usize>>,
+    pub(crate) possible_choices: HashMap<Node<'i, G::NodeKind>, BTreeSet<G::NodeKind>>,
+    pub(crate) possible_splits: HashMap<Node<'i, G::NodeKind>, BTreeSet<usize>>,
 }
 
 type_lambda! {
     pub type<'i> ParseForestL<G: GrammarReflector, I: Input> = ParseForest<'i, G, I>;
-    pub type<'i> ParseNodeL<P> = ParseNode<'i, P>;
+    pub type<'i> NodeL<P> = Node<'i, P>;
 }
 
-pub type OwnedParseForestAndNode<G, P, I> = ExistsL<PairL<ParseForestL<G, I>, ParseNodeL<P>>>;
+pub type OwnedParseForestAndNode<G, P, I> = ExistsL<PairL<ParseForestL<G, I>, NodeL<P>>>;
 
 #[derive(Debug)]
 pub struct MoreThanOne;
@@ -94,9 +93,9 @@ pub struct MoreThanOne;
 impl<'i, P, G, I: Input> ParseForest<'i, G, I>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
+    // `GrammarReflector::NodeKind`, but that's ignored currently.
     P: fmt::Debug + Ord + Hash + Copy,
-    G: GrammarReflector<ParseNodeKind = P>,
+    G: GrammarReflector<NodeKind = P>,
 {
     pub fn input(&self, range: Range<'i>) -> &I::Slice {
         I::slice(&self.input, range)
@@ -106,15 +105,15 @@ where
         I::source_info(&self.input, range)
     }
 
-    pub fn one_choice(&self, node: ParseNode<'i, P>) -> Result<ParseNode<'i, P>, MoreThanOne> {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Choice => {
+    pub fn one_choice(&self, node: Node<'i, P>) -> Result<Node<'i, P>, MoreThanOne> {
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Choice => {
                 let choices = &self.possible_choices[&node];
                 if choices.len() > 1 {
                     return Err(MoreThanOne);
                 }
                 let &choice = choices.iter().next().unwrap();
-                Ok(ParseNode {
+                Ok(Node {
                     kind: choice,
                     range: node.range,
                 })
@@ -125,19 +124,19 @@ where
 
     pub fn all_choices<'a>(
         &'a self,
-        node: ParseNode<'i, P>,
-    ) -> impl Iterator<Item = ParseNode<'i, P>> + Clone + 'a
+        node: Node<'i, P>,
+    ) -> impl Iterator<Item = Node<'i, P>> + Clone + 'a
     where
         P: 'a,
     {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Choice => self
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Choice => self
                 .possible_choices
                 .get(&node)
                 .into_iter()
                 .flatten()
                 .cloned()
-                .map(move |kind| ParseNode {
+                .map(move |kind| Node {
                     kind,
                     range: node.range,
                 }),
@@ -145,12 +144,9 @@ where
         }
     }
 
-    pub fn one_split(
-        &self,
-        node: ParseNode<'i, P>,
-    ) -> Result<(ParseNode<'i, P>, ParseNode<'i, P>), MoreThanOne> {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Split(left_kind, right_kind) => {
+    pub fn one_split(&self, node: Node<'i, P>) -> Result<(Node<'i, P>, Node<'i, P>), MoreThanOne> {
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Split(left_kind, right_kind) => {
                 let splits = &self.possible_splits[&node];
                 if splits.len() > 1 {
                     return Err(MoreThanOne);
@@ -158,11 +154,11 @@ where
                 let &split = splits.iter().next().unwrap();
                 let (left, right, _) = node.range.split_at(split);
                 Ok((
-                    ParseNode {
+                    Node {
                         kind: left_kind,
                         range: Range(left),
                     },
-                    ParseNode {
+                    Node {
                         kind: right_kind,
                         range: Range(right),
                     },
@@ -174,13 +170,13 @@ where
 
     pub fn all_splits<'a>(
         &'a self,
-        node: ParseNode<'i, P>,
-    ) -> impl Iterator<Item = (ParseNode<'i, P>, ParseNode<'i, P>)> + Clone + 'a
+        node: Node<'i, P>,
+    ) -> impl Iterator<Item = (Node<'i, P>, Node<'i, P>)> + Clone + 'a
     where
         P: 'a,
     {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Split(left_kind, right_kind) => self
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Split(left_kind, right_kind) => self
                 .possible_splits
                 .get(&node)
                 .into_iter()
@@ -189,11 +185,11 @@ where
                 .map(move |i| {
                     let (left, right, _) = node.range.split_at(i);
                     (
-                        ParseNode {
+                        Node {
                             kind: left_kind,
                             range: Range(left),
                         },
-                        ParseNode {
+                        Node {
                             kind: right_kind,
                             range: Range(right),
                         },
@@ -203,9 +199,9 @@ where
         }
     }
 
-    pub fn unpack_alias(&self, node: ParseNode<'i, P>) -> ParseNode<'i, P> {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Alias(inner) => ParseNode {
+    pub fn unpack_alias(&self, node: Node<'i, P>) -> Node<'i, P> {
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Alias(inner) => Node {
                 kind: inner,
                 range: node.range,
             },
@@ -213,13 +209,13 @@ where
         }
     }
 
-    pub fn unpack_opt(&self, node: ParseNode<'i, P>) -> Option<ParseNode<'i, P>> {
-        match self.grammar.parse_node_shape(node.kind) {
-            ParseNodeShape::Opt(inner) => {
+    pub fn unpack_opt(&self, node: Node<'i, P>) -> Option<Node<'i, P>> {
+        match self.grammar.node_shape(node.kind) {
+            NodeShape::Opt(inner) => {
                 if node.range.is_empty() {
                     None
                 } else {
-                    Some(ParseNode {
+                    Some(Node {
                         kind: inner,
                         range: node.range,
                     })
@@ -239,17 +235,17 @@ where
             .collect();
         let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
-        let node_name = |ParseNode { kind, range }| {
+        let node_name = |Node { kind, range }| {
             format!(
                 "{} @ {:?}",
-                self.grammar.parse_node_desc(kind),
+                self.grammar.node_desc(kind),
                 self.source_info(range)
             )
         };
         while let Some(source) = queue.pop_front() {
             let source_name = node_name(source);
             writeln!(out, "    {:?} [shape=box]", source_name)?;
-            let mut add_children = |children: &[(&str, ParseNode<'i, P>)]| -> io::Result<()> {
+            let mut add_children = |children: &[(&str, Node<'i, P>)]| -> io::Result<()> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, "    {:?} -> p{}:n", source_name, p)?;
                 for &(port, child) in children {
@@ -267,26 +263,26 @@ where
                 p += 1;
                 Ok(())
             };
-            match self.grammar.parse_node_shape(source.kind) {
-                ParseNodeShape::Opaque => {}
+            match self.grammar.node_shape(source.kind) {
+                NodeShape::Opaque => {}
 
-                ParseNodeShape::Alias(_) => {
+                NodeShape::Alias(_) => {
                     add_children(&[("s", self.unpack_alias(source))])?;
                 }
 
-                ParseNodeShape::Opt(_) => {
+                NodeShape::Opt(_) => {
                     if let Some(child) = self.unpack_opt(source) {
                         add_children(&[("s", child)])?;
                     }
                 }
 
-                ParseNodeShape::Choice => {
+                NodeShape::Choice => {
                     for child in self.all_choices(source) {
                         add_children(&[("s", child)])?;
                     }
                 }
 
-                ParseNodeShape::Split(..) => {
+                NodeShape::Split(..) => {
                     for (left, right) in self.all_splits(source) {
                         add_children(&[("sw", left), ("se", right)])?;
                     }
