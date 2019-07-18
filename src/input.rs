@@ -160,20 +160,29 @@ impl<'a> Input for &'a str {
     }
 }
 
-pub trait InputMatch<Pat> {
-    fn match_left(&self, pat: &'static Pat) -> Option<usize>;
-    fn match_right(&self, pat: &'static Pat) -> Option<usize>;
+pub trait InputMatch<Pat: ?Sized> {
+    fn match_left(&self, pat: &Pat) -> Option<usize>;
+    fn match_right(&self, pat: &Pat) -> Option<usize>;
 }
 
-impl<T: PartialEq> InputMatch<&'static [T]> for [T] {
-    fn match_left(&self, pat: &&[T]) -> Option<usize> {
+impl<I: ?Sized + InputMatch<Pat>, Pat: ?Sized> InputMatch<&'_ Pat> for I {
+    fn match_left(&self, &pat: &&Pat) -> Option<usize> {
+        self.match_left(pat)
+    }
+    fn match_right(&self, &pat: &&Pat) -> Option<usize> {
+        self.match_right(pat)
+    }
+}
+
+impl<T: PartialEq> InputMatch<[T]> for [T] {
+    fn match_left(&self, pat: &[T]) -> Option<usize> {
         if self.starts_with(pat) {
             Some(pat.len())
         } else {
             None
         }
     }
-    fn match_right(&self, pat: &&[T]) -> Option<usize> {
+    fn match_right(&self, pat: &[T]) -> Option<usize> {
         if self.ends_with(pat) {
             Some(pat.len())
         } else {
@@ -201,15 +210,15 @@ impl<T: PartialOrd> InputMatch<RangeInclusive<T>> for [T] {
     }
 }
 
-impl InputMatch<&'static str> for str {
-    fn match_left(&self, pat: &&str) -> Option<usize> {
+impl InputMatch<str> for str {
+    fn match_left(&self, pat: &str) -> Option<usize> {
         if self.starts_with(pat) {
             Some(pat.len())
         } else {
             None
         }
     }
-    fn match_right(&self, pat: &&str) -> Option<usize> {
+    fn match_right(&self, pat: &str) -> Option<usize> {
         if self.ends_with(pat) {
             Some(pat.len())
         } else {
