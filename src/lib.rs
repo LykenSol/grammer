@@ -1,12 +1,40 @@
+#![deny(unsafe_code)]
 #![deny(rust_2018_idioms)]
+
+// NOTE only these two modules can and do contain unsafe code.
+#[allow(unsafe_code)]
+mod high;
+#[allow(unsafe_code)]
+mod indexing_str;
+
+#[forbid(unsafe_code)]
+pub mod context;
+#[forbid(unsafe_code)]
+pub mod forest;
+#[forbid(unsafe_code)]
+pub mod input;
+#[forbid(unsafe_code)]
+pub mod parse_node;
+#[forbid(unsafe_code)]
+pub mod parser;
+#[forbid(unsafe_code)]
+pub mod proc_macro;
+#[forbid(unsafe_code)]
+pub mod rule;
+#[forbid(unsafe_code)]
+pub mod scannerless;
+
+// HACK(eddyb) this contains impls for types in `proc_macro`, which depend on
+// `input`, collapse this back into `proc_macro`.
+#[forbid(unsafe_code)]
+mod proc_macro_input;
+
+// FIXME(eddyb) maybe put the rest of this file into submodules?
 
 use crate::context::{Context, IStr};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::hash::Hash;
-
-pub mod context;
-pub mod rule;
 
 pub struct Grammar {
     pub rules: IndexMap<IStr, rule::RuleWithNamedFields>,
