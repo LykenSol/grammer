@@ -3,6 +3,8 @@ use crate::scannerless::Pat as SPat;
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
+use std::fmt;
+use std::ops::Deref;
 use std::str::FromStr;
 
 pub type Context = crate::context::Context<Pat>;
@@ -46,7 +48,7 @@ pub fn builtin(cx: &mut Context) -> crate::Grammar {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Pat(pub Vec<FlatTokenPat<String>>);
+pub struct Pat<Pats = Vec<FlatTokenPat<String>>>(pub Pats);
 
 impl FromStr for Pat {
     type Err = LexError;
@@ -69,6 +71,12 @@ impl FromStr for Pat {
 impl From<&str> for Pat {
     fn from(s: &str) -> Self {
         s.parse().unwrap()
+    }
+}
+
+impl<Pats> From<Pats> for Pat<Pats> {
+    fn from(pats: Pats) -> Self {
+        Pat(pats)
     }
 }
 
@@ -100,7 +108,7 @@ pub enum FlatToken {
     Literal(Literal),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FlatTokenPat<S: AsRef<str>> {
     Delim(char),
     Ident(Option<S>),
@@ -109,6 +117,51 @@ pub enum FlatTokenPat<S: AsRef<str>> {
         joint: Option<bool>,
     },
     Literal,
+}
+
+impl<S: AsRef<str>> fmt::Debug for FlatTokenPat<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FlatTokenPat::Delim(c) | FlatTokenPat::Punct { ch: Some(c), .. } => {
+                write!(f, "\"{}\"", c)
+            }
+            FlatTokenPat::Ident(None) => f.write_str("IDENT"),
+            FlatTokenPat::Ident(Some(ident)) => write!(f, "\"{}\"", ident.as_ref()),
+            FlatTokenPat::Punct { ch: None, .. } => f.write_str("PUNCT"),
+            FlatTokenPat::Literal => f.write_str("LITERAL"),
+        }
+    }
+}
+
+// FIXME(eddyb) can't use `Pats: AsRef<[FlatTokenPat<S>]` as it doesn't constrain `S`.
+impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<Pats> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0[..] {
+            [] => f.write_str("\"\""),
+            [pat] => pat.fmt(f),
+            pats => {
+                let mut was_joint = true;
+                f.write_str("\"")?;
+                for pat in pats {
+                    if !was_joint {
+                        f.write_str(" ")?;
+                    }
+                    match pat {
+                        FlatTokenPat::Punct { ch: Some(c), joint } => {
+                            write!(f, "{}", c)?;
+                            was_joint = *joint == Some(true);
+                        }
+                        FlatTokenPat::Ident(Some(ident)) => {
+                            write!(f, "\"{}\"", ident.as_ref())?;
+                            was_joint = false;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                f.write_str("\"")
+            }
+        }
+    }
 }
 
 impl FlatToken {

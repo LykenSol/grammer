@@ -1,13 +1,33 @@
 use crate::rule::{MatchesEmpty, MaybeKnown};
 use std::char;
+use std::fmt;
 use std::ops::{self, Bound, RangeBounds};
 
 pub type Context<S = String> = crate::context::Context<Pat<S>>;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pat<S = String, C = char> {
     String(S),
     Range(C, C),
+}
+
+impl<S: fmt::Debug> fmt::Debug for Pat<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Pat::String(s) => s.fmt(f),
+            &Pat::Range(start, end) => {
+                if start != '\0' {
+                    start.fmt(f)?;
+                }
+                f.write_str("..")?;
+                if end != char::MAX {
+                    f.write_str("=")?;
+                    end.fmt(f)?;
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 impl<'a, C> From<&'a str> for Pat<&'a str, C> {

@@ -6,27 +6,27 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 
-pub struct Parser<'a, 'i, G: GrammarReflector, I: Input> {
-    state: &'a mut ParserState<'i, G, I>,
+pub struct Parser<'a, 'i, G: GrammarReflector, I: Input, Pat> {
+    state: &'a mut ParserState<'i, G, I, Pat>,
     result: Range<'i>,
     remaining: Range<'i>,
 }
 
-struct ParserState<'i, G: GrammarReflector, I: Input> {
+struct ParserState<'i, G: GrammarReflector, I: Input, Pat> {
     forest: ParseForest<'i, G, I>,
     last_input_pos: Index<'i, Unknown>,
-    expected_pats: Vec<&'static dyn fmt::Debug>,
+    expected_pats: Vec<Pat>,
 }
 
 #[derive(Debug)]
-pub struct ParseError<A> {
+pub struct ParseError<A, Pat> {
     pub at: A,
-    pub expected: Vec<&'static dyn fmt::Debug>,
+    pub expected: Vec<Pat>,
 }
 
-pub type ParseResult<A, T> = Result<T, ParseError<A>>;
+pub type ParseResult<A, Pat, T> = Result<T, ParseError<A, Pat>>;
 
-impl<'i, P, G, I: Input> Parser<'_, 'i, G, I>
+impl<'i, P, G, I: Input, Pat> Parser<'_, 'i, G, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
@@ -36,8 +36,8 @@ where
     pub fn parse_with(
         grammar: G,
         input: I,
-        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I>) -> Option<ParseNode<'i2, P>>,
-    ) -> ParseResult<I::SourceInfoPoint, OwnedParseForestAndNode<G, P, I>> {
+        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<ParseNode<'i2, P>>,
+    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, P, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let range = Range(input.range());
             let mut state = ParserState {
@@ -99,7 +99,7 @@ where
         &'a mut self,
         result: Range<'i>,
         remaining: Range<'i>,
-    ) -> Parser<'a, 'i, G, I> {
+    ) -> Parser<'a, 'i, G, I, Pat> {
         // HACK(eddyb) enforce that `result` and `remaining` are inside `self`.
         assert_eq!(self.result, Range(self.remaining.frontiers().0));
         let full_new_range = result.join(remaining.0).unwrap();
@@ -113,19 +113,19 @@ where
         }
     }
 
-    pub fn input_consume_left<'a, Pat: fmt::Debug>(
+    pub fn input_consume_left<'a, SpecificPat: Into<Pat>>(
         &'a mut self,
-        pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, G, I>>
+        pat: SpecificPat,
+    ) -> Option<Parser<'a, 'i, G, I, Pat>>
     where
-        I::Slice: InputMatch<Pat>,
+        I::Slice: InputMatch<SpecificPat>,
     {
         let start = self.remaining.first();
         if start > self.state.last_input_pos {
             self.state.last_input_pos = start;
             self.state.expected_pats.clear();
         }
-        match self.state.forest.input(self.remaining).match_left(pat) {
+        match self.state.forest.input(self.remaining).match_left(&pat) {
             Some(n) => {
                 let (matching, after, _) = self.remaining.split_at(n);
                 if n > 0 {
@@ -140,22 +140,22 @@ where
             }
             None => {
                 if start == self.state.last_input_pos {
-                    self.state.expected_pats.push(pat);
+                    self.state.expected_pats.push(pat.into());
                 }
                 None
             }
         }
     }
 
-    pub fn input_consume_right<'a, Pat>(
+    pub fn input_consume_right<'a, SpecificPat>(
         &'a mut self,
-        pat: &'static Pat,
-    ) -> Option<Parser<'a, 'i, G, I>>
+        pat: SpecificPat,
+    ) -> Option<Parser<'a, 'i, G, I, Pat>>
     where
-        I::Slice: InputMatch<Pat>,
+        I::Slice: InputMatch<SpecificPat>,
     {
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
-        match self.state.forest.input(self.remaining).match_right(pat) {
+        match self.state.forest.input(self.remaining).match_right(&pat) {
             Some(n) => {
                 let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
                 Some(Parser {

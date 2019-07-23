@@ -52,8 +52,8 @@ impl Input for TokenStream {
     }
 }
 
-impl InputMatch<&'static [FlatTokenPat<&'static str>]> for [FlatToken] {
-    fn match_left(&self, &pat: &&[FlatTokenPat<&str>]) -> Option<usize> {
+impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
+    fn match_left(&self, pat: &[FlatTokenPat<&str>]) -> Option<usize> {
         if self
             .iter()
             .zip(pat)
@@ -66,7 +66,7 @@ impl InputMatch<&'static [FlatTokenPat<&'static str>]> for [FlatToken] {
             None
         }
     }
-    fn match_right(&self, &pat: &&[FlatTokenPat<&str>]) -> Option<usize> {
+    fn match_right(&self, pat: &[FlatTokenPat<&str>]) -> Option<usize> {
         if self
             .iter()
             .zip(pat)
