@@ -52,7 +52,7 @@ impl Grammar {
     }
     pub fn insert_whitespace<Pat: Eq + Hash>(
         self,
-        cx: &mut Context<Pat>,
+        cx: &Context<Pat>,
         whitespace: rule::RuleWithNamedFields,
     ) -> Self {
         Grammar {
@@ -80,7 +80,7 @@ impl Grammar {
 }
 
 /// Construct a (meta-)grammar for parsing a grammar.
-pub fn grammar_grammar<Pat: Eq + Hash + From<&'static str>>(cx: &mut Context<Pat>) -> Grammar {
+pub fn grammar_grammar<Pat: Eq + Hash + From<&'static str>>(cx: &Context<Pat>) -> Grammar {
     use crate::rule::*;
 
     // HACK(eddyb) more explicit subset of the grammar, for bootstrapping.

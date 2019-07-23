@@ -17,7 +17,7 @@ pub struct Context<Pat> {
 pub trait InternInCx<Pat> {
     type Interned;
 
-    fn intern_in_cx(self, cx: &mut Context<Pat>) -> Self::Interned;
+    fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned;
 }
 
 impl<Pat: Eq + Hash> Context<Pat> {
@@ -27,7 +27,7 @@ impl<Pat: Eq + Hash> Context<Pat> {
         }
     }
 
-    pub fn intern<T: InternInCx<Pat>>(&mut self, x: T) -> T::Interned {
+    pub fn intern<T: InternInCx<Pat>>(&self, x: T) -> T::Interned {
         x.intern_in_cx(self)
     }
 }
@@ -98,7 +98,7 @@ interners! {
 impl<Pat> InternInCx<Pat> for &'_ str {
     type Interned = IStr;
 
-    fn intern_in_cx(self, cx: &mut Context<Pat>) -> IStr {
+    fn intern_in_cx(self, cx: &Context<Pat>) -> IStr {
         IStr(cx.interners.IStr.intern(self))
     }
 }
@@ -113,7 +113,7 @@ impl<Pat> AsRef<Self> for Rule<Pat> {
 impl<Pat: Eq + Hash> InternInCx<Pat> for Rule<Pat> {
     type Interned = IRule;
 
-    fn intern_in_cx(self, cx: &mut Context<Pat>) -> Self::Interned {
+    fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned {
         IRule(cx.interners.IRule.intern(self))
     }
 }
