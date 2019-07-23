@@ -16,3 +16,7 @@ description = "Grammar framework."
 indexmap = "1"
 indexing = "0.3.2"
 proc-macro2 = "0.4.30"
+
+[lib]
+doctest = false
+test = false
