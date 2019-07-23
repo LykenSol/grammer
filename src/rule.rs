@@ -1,5 +1,5 @@
 use crate::context::{Context, IRule, IStr};
-use indexmap::{indexset, IndexMap, IndexSet};
+use indexmap::{indexmap, IndexMap};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -9,23 +9,28 @@ use std::ops::{Add, BitAnd, BitOr};
 #[derive(Clone)]
 pub struct RuleWithNamedFields {
     pub rule: IRule,
-    pub fields: IndexMap<IStr, FieldPathset>,
+    pub fields: Fields,
 }
 
-#[derive(Clone, Default)]
-pub struct FieldPathset(pub IndexSet<Vec<usize>>);
+pub type Fields = IndexMap<IStr, Field>;
 
-impl FieldPathset {
-    fn prepend_all(self, i: usize) -> Self {
-        FieldPathset(
-            self.0
+#[derive(Clone, Default)]
+pub struct Field {
+    pub paths: IndexMap<Vec<usize>, Fields>,
+}
+
+impl Field {
+    fn prepend_paths(self, i: usize) -> Self {
+        Field {
+            paths: self
+                .paths
                 .into_iter()
-                .map(|mut path| {
+                .map(|(mut path, subfields)| {
                     path.insert(0, i);
-                    path
+                    (path, subfields)
                 })
                 .collect(),
-        )
+        }
     }
 }
 
@@ -110,7 +115,11 @@ mod build {
                 Rule::Opt(_) => vec![0],
                 _ => vec![],
             };
-            rule.fields.insert(name, FieldPathset(indexset![path]));
+            rule.fields = indexmap! {
+                name => super::Field {
+                    paths: indexmap! { path => rule.fields },
+                },
+            };
             rule
         }
     }
@@ -125,7 +134,7 @@ mod build {
                 fields: rule
                     .fields
                     .into_iter()
-                    .map(|(name, paths)| (name, paths.prepend_all(0)))
+                    .map(|(name, field)| (name, field.prepend_paths(0)))
                     .collect(),
             }
         }
@@ -141,7 +150,7 @@ mod build {
                 fields: elem
                     .fields
                     .into_iter()
-                    .map(|(name, paths)| (name, paths.prepend_all(0)))
+                    .map(|(name, field)| (name, field.prepend_paths(0)))
                     .collect(),
             }
         }
@@ -159,7 +168,7 @@ mod build {
                 fields: elem
                     .fields
                     .into_iter()
-                    .map(|(name, paths)| (name, paths.prepend_all(0)))
+                    .map(|(name, field)| (name, field.prepend_paths(0)))
                     .collect(),
             }
         }
@@ -175,7 +184,7 @@ mod build {
                 fields: elem
                     .fields
                     .into_iter()
-                    .map(|(name, paths)| (name, paths.prepend_all(0)))
+                    .map(|(name, field)| (name, field.prepend_paths(0)))
                     .collect(),
             }
         }
@@ -193,7 +202,7 @@ mod build {
                 fields: elem
                     .fields
                     .into_iter()
-                    .map(|(name, paths)| (name, paths.prepend_all(0)))
+                    .map(|(name, field)| (name, field.prepend_paths(0)))
                     .collect(),
             }
         }
@@ -215,11 +224,11 @@ mod build {
             let mut fields: IndexMap<_, _> = a
                 .fields
                 .into_iter()
-                .map(|(name, paths)| (name, paths.prepend_all(0)))
+                .map(|(name, field)| (name, field.prepend_paths(0)))
                 .collect();
-            for (name, paths) in b.fields {
+            for (name, field) in b.fields {
                 assert!(!fields.contains_key(&name), "duplicate field {}", cx[name]);
-                fields.insert(name, paths.prepend_all(1));
+                fields.insert(name, field.prepend_paths(1));
             }
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Concat([a.rule, b.rule])),
@@ -245,12 +254,12 @@ mod build {
                 .chain(iter::once(b))
                 .enumerate()
                 .map(|(i, rule)| {
-                    for (name, paths) in rule.fields {
+                    for (name, field) in rule.fields {
                         fields
                             .entry(name)
                             .or_default()
-                            .0
-                            .extend(paths.prepend_all(old_rules.len() + i).0);
+                            .paths
+                            .extend(field.prepend_paths(old_rules.len() + i).paths);
                     }
 
                     rule.rule
@@ -379,22 +388,22 @@ pub enum Rule<Pat> {
 }
 
 impl IRule {
-    pub fn field_pathset_is_refutable<Pat>(self, cx: &Context<Pat>, paths: &FieldPathset) -> bool {
-        if paths.0.len() > 1 {
+    pub fn field_is_refutable<Pat>(self, cx: &Context<Pat>, field: &Field) -> bool {
+        if field.paths.len() > 1 {
             true
         } else {
-            self.field_is_refutable(cx, paths.0.get_index(0).unwrap())
+            self.field_path_is_refutable(cx, field.paths.get_index(0).unwrap().0)
         }
     }
 
-    pub fn field_is_refutable<Pat>(self, cx: &Context<Pat>, path: &[usize]) -> bool {
+    pub fn field_path_is_refutable<Pat>(self, cx: &Context<Pat>, path: &[usize]) -> bool {
         match cx[self] {
             Rule::Empty
             | Rule::Eat(_)
             | Rule::Call(_)
             | Rule::RepeatMany(..)
             | Rule::RepeatMore(..) => false,
-            Rule::Concat(rules) => rules[path[0]].field_is_refutable(cx, &path[1..]),
+            Rule::Concat(rules) => rules[path[0]].field_path_is_refutable(cx, &path[1..]),
             Rule::Or(..) | Rule::Opt(_) => true,
         }
     }
@@ -585,24 +594,21 @@ pub trait Folder<Pat: Eq + Hash>: Sized {
 
 impl RuleWithNamedFields {
     // HACK(eddyb) this is pretty expensive, find a better way
-    fn filter_fields<'a>(
-        &'a self,
-        field: Option<usize>,
-    ) -> impl Iterator<Item = (IStr, FieldPathset)> + 'a {
-        self.fields.iter().filter_map(move |(&name, paths)| {
-            let paths: IndexSet<_> = paths
-                .0
+    fn filter_fields<'a>(&'a self, i: Option<usize>) -> impl Iterator<Item = (IStr, Field)> + 'a {
+        self.fields.iter().filter_map(move |(&name, field)| {
+            let paths: IndexMap<_, _> = field
+                .paths
                 .iter()
-                .filter_map(move |path| {
-                    if path.first().cloned() == field {
-                        Some(path.get(1..).unwrap_or(&[]).to_vec())
+                .filter_map(move |(path, subfields)| {
+                    if path.first().cloned() == i {
+                        Some((path.get(1..).unwrap_or(&[]).to_vec(), subfields.clone()))
                     } else {
                         None
                     }
                 })
                 .collect();
             if !paths.is_empty() {
-                Some((name, FieldPathset(paths)))
+                Some((name, Field { paths }))
             } else {
                 None
             }
