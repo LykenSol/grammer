@@ -229,7 +229,7 @@ mod build {
                 .map(|(name, field)| (name, field.prepend_paths(0)))
                 .collect();
             for (name, field) in b.fields {
-                assert!(!fields.contains_key(&name), "duplicate field {}", cx[name]);
+                assert!(!fields.contains_key(&name), "duplicate field {}", &cx[name]);
                 fields.insert(name, field.prepend_paths(1));
             }
             RuleWithNamedFields {
@@ -555,7 +555,7 @@ impl IRule {
                 assert!(
                     grammar.rules.contains_key(&rule),
                     "no rule named `{}`",
-                    cx[rule]
+                    &cx[rule]
                 );
             }
             Rule::Concat([left, right]) => {
