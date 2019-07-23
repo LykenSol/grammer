@@ -1,6 +1,10 @@
-use indexmap::IndexSet;
+use crate::rule::Rule;
+use elsa::FrozenVec;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::convert::TryInto;
 use std::hash::Hash;
+use std::rc::Rc;
 
 /// Context object with global resources for working with grammar,
 /// such as interners.
@@ -13,18 +17,46 @@ pub struct Context<Pat> {
 pub trait InternInCx<Pat> {
     type Interned;
 
-    fn intern_in_cx(self, cx: &mut Context<Pat>) -> Self::Interned;
+    fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned;
 }
 
-impl<Pat> Context<Pat> {
+impl<Pat: Eq + Hash> Context<Pat> {
     pub fn new() -> Self {
         Context {
             interners: Interners::default(),
         }
     }
 
-    pub fn intern<T: InternInCx<Pat>>(&mut self, x: T) -> T::Interned {
+    pub fn intern<T: InternInCx<Pat>>(&self, x: T) -> T::Interned {
         x.intern_in_cx(self)
+    }
+}
+
+struct Interner<T: ?Sized> {
+    // FIXME(Manishearth/elsa#6) switch to `FrozenIndexSet` when available.
+    map: RefCell<HashMap<Rc<T>, u32>>,
+    vec: FrozenVec<Rc<T>>,
+}
+
+impl<T: ?Sized + Eq + Hash> Default for Interner<T> {
+    fn default() -> Self {
+        Interner {
+            map: RefCell::new(HashMap::default()),
+            vec: FrozenVec::new(),
+        }
+    }
+}
+
+impl<T: ?Sized + Eq + Hash> Interner<T> {
+    fn intern(&self, value: impl AsRef<T> + Into<Rc<T>>) -> u32 {
+        if let Some(&i) = self.map.borrow().get(value.as_ref()) {
+            return i;
+        }
+        let value = value.into();
+        let next = self.vec.len().try_into().unwrap();
+        self.map.borrow_mut().insert(value.clone(), next);
+        self.vec.push(value);
+        next
     }
 }
 
@@ -32,13 +64,13 @@ macro_rules! interners {
     ($($name:ident => $ty:ty),* $(,)?) => {
         #[allow(non_snake_case)]
         struct Interners<Pat> {
-            $($name: IndexSet<$ty>),*
+            $($name: Interner<$ty>),*
         }
 
-        impl<Pat> Default for Interners<Pat> {
+        impl<Pat: Eq + Hash> Default for Interners<Pat> {
             fn default() -> Self {
                 Interners {
-                    $($name: IndexSet::new()),*
+                    $($name: Default::default()),*
                 }
             }
         }
@@ -47,19 +79,11 @@ macro_rules! interners {
             #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
             pub struct $name(u32);
 
-            impl<Pat: Eq + Hash> InternInCx<Pat> for $ty {
-                type Interned = $name;
-
-                fn intern_in_cx(self, cx: &mut Context<Pat>) -> Self::Interned {
-                    $name(cx.interners.$name.insert_full(self).0.try_into().unwrap())
-                }
-            }
-
             impl<Pat> std::ops::Index<$name> for Context<Pat> {
                 type Output = $ty;
 
                 fn index(&self, interned: $name) -> &Self::Output {
-                    self.interners.$name.get_index(interned.0 as usize).unwrap()
+                    &self.interners.$name.vec[interned.0 as usize]
                 }
             }
         )*
@@ -67,19 +91,29 @@ macro_rules! interners {
 }
 
 interners! {
-    IStr => String,
-    IRule => crate::rule::Rule<Pat>,
+    IStr => str,
+    IRule => Rule<Pat>,
 }
 
-impl<Pat: Eq + Hash> InternInCx<Pat> for &'_ str {
+impl<Pat> InternInCx<Pat> for &'_ str {
     type Interned = IStr;
 
-    fn intern_in_cx(self, cx: &mut Context<Pat>) -> IStr {
-        // Avoid allocating if this string is already in the interner.
-        if let Some((i, _)) = cx.interners.IStr.get_full(self) {
-            return IStr(i.try_into().unwrap());
-        }
+    fn intern_in_cx(self, cx: &Context<Pat>) -> IStr {
+        IStr(cx.interners.IStr.intern(self))
+    }
+}
 
-        cx.intern(self.to_string())
+// FIXME(eddyb) automate this away somehow.
+impl<Pat> AsRef<Self> for Rule<Pat> {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+impl<Pat: Eq + Hash> InternInCx<Pat> for Rule<Pat> {
+    type Interned = IRule;
+
+    fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned {
+        IRule(cx.interners.IRule.intern(self))
     }
 }

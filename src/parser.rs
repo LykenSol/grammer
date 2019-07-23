@@ -1,4 +1,4 @@
-use crate::forest::{GrammarReflector, OwnedParseForestAndNode, ParseForest, ParseNode};
+use crate::forest::{GrammarReflector, Node, OwnedParseForestAndNode, ParseForest};
 use crate::high::ErasableL;
 use crate::input::{Input, InputMatch, Range};
 use indexing::{self, Index, Unknown};
@@ -29,14 +29,14 @@ pub type ParseResult<A, Pat, T> = Result<T, ParseError<A, Pat>>;
 impl<'i, P, G, I: Input, Pat> Parser<'_, 'i, G, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::ParseNodeKind`, but that's ignored currently.
+    // `GrammarReflector::NodeKind`, but that's ignored currently.
     P: fmt::Debug + Ord + Hash + Copy,
-    G: GrammarReflector<ParseNodeKind = P>,
+    G: GrammarReflector<NodeKind = P>,
 {
     pub fn parse_with(
         grammar: G,
         input: I,
-        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<ParseNode<'i2, P>>,
+        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<Node<'i2, P>>,
     ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, P, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let range = Range(input.range());
@@ -172,7 +172,7 @@ where
         self.state
             .forest
             .possible_choices
-            .entry(ParseNode {
+            .entry(Node {
                 kind,
                 range: self.result,
             })
@@ -181,12 +181,12 @@ where
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(&mut self, kind: P, left: ParseNode<'i, P>) {
+    pub fn forest_add_split(&mut self, kind: P, left: Node<'i, P>) {
         self.result = Range(left.range.join(self.result.0).unwrap());
         self.state
             .forest
             .possible_splits
-            .entry(ParseNode {
+            .entry(Node {
                 kind,
                 range: self.result,
             })

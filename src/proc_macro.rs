@@ -9,7 +9,7 @@ use std::str::FromStr;
 
 pub type Context = crate::context::Context<Pat>;
 
-pub fn builtin(cx: &mut Context) -> crate::Grammar {
+pub fn builtin(cx: &Context) -> crate::Grammar {
     let mut g = crate::Grammar::new();
 
     let ident = eat(Pat(vec![FlatTokenPat::Ident(None)])).finish(cx);
