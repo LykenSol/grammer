@@ -9,7 +9,7 @@ use std::iter;
 use std::ops::{Add, BitAnd, BitOr};
 
 #[derive(Copy, Clone)]
-pub struct RuleWithNamedFields {
+pub struct RuleWithFields {
     pub rule: IRule,
     pub fields: IFields,
 }
@@ -85,8 +85,8 @@ mod build {
         fn start(self) -> Self::Out;
     }
 
-    impl Start for RuleWithNamedFields {
-        type Out = RuleWithNamedFields;
+    impl Start for RuleWithFields {
+        type Out = RuleWithFields;
 
         fn start(self) -> Self::Out {
             self
@@ -94,11 +94,11 @@ mod build {
     }
 
     pub trait Finish<Pat> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields;
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields;
     }
 
-    impl<Pat> Finish<Pat> for RuleWithNamedFields {
-        fn finish(self, _cx: &Context<Pat>) -> RuleWithNamedFields {
+    impl<Pat> Finish<Pat> for RuleWithFields {
+        fn finish(self, _cx: &Context<Pat>) -> RuleWithFields {
             self
         }
     }
@@ -106,8 +106,8 @@ mod build {
     pub struct Empty;
 
     impl<Pat: Eq + Hash> Finish<Pat> for Empty {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
-            RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::Empty),
                 fields: cx.intern(Fields::Leaf(None)),
             }
@@ -117,8 +117,8 @@ mod build {
     pub struct Eat<Pat>(Pat);
 
     impl<Pat: Eq + Hash> Finish<Pat> for Eat<Pat> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
-            RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::Eat(self.0)),
                 fields: cx.intern(Fields::Leaf(None)),
             }
@@ -128,8 +128,8 @@ mod build {
     pub struct Call<'a>(&'a str);
 
     impl<Pat: Eq + Hash> Finish<Pat> for Call<'_> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
-            RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::Call(cx.intern(self.0))),
                 fields: cx.intern(Fields::Leaf(None)),
             }
@@ -139,9 +139,9 @@ mod build {
     pub struct Field<'a, R>(R, &'a str);
 
     impl<Pat: Eq + Hash, R: Finish<Pat>> Finish<Pat> for Field<'_, R> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let rule = self.0.finish(cx);
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: rule.rule,
                 fields: cx.intern(Fields::Leaf(Some(super::Field {
                     name: cx.intern(self.1),
@@ -154,9 +154,9 @@ mod build {
     pub struct Opt<R>(R);
 
     impl<Pat: Eq + Hash, R: Finish<Pat>> Finish<Pat> for Opt<R> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let rule = self.0.finish(cx);
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::Opt(rule.rule)),
                 fields: Fields::aggregate(cx, iter::once(rule.fields)),
             }
@@ -166,9 +166,9 @@ mod build {
     pub struct RepeatMany<E>(E);
 
     impl<Pat: Eq + Hash, E: Finish<Pat>> Finish<Pat> for RepeatMany<E> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let elem = self.0.finish(cx);
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::RepeatMany(elem.rule, None)),
                 fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
@@ -178,11 +178,11 @@ mod build {
     pub struct RepeatManySep<E, S>(E, S, SepKind);
 
     impl<Pat: Eq + Hash, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatManySep<E, S> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
             assert_eq!(cx[sep.fields], Fields::Leaf(None));
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::RepeatMany(elem.rule, Some((sep.rule, self.2)))),
                 fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
@@ -192,9 +192,9 @@ mod build {
     pub struct RepeatMore<E>(E);
 
     impl<Pat: Eq + Hash, E: Finish<Pat>> Finish<Pat> for RepeatMore<E> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let elem = self.0.finish(cx);
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::RepeatMore(elem.rule, None)),
                 fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
@@ -204,11 +204,11 @@ mod build {
     pub struct RepeatMoreSep<E, S>(E, S, SepKind);
 
     impl<Pat: Eq + Hash, E: Finish<Pat>, S: Finish<Pat>> Finish<Pat> for RepeatMoreSep<E, S> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
             assert_eq!(cx[sep.fields], Fields::Leaf(None));
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::RepeatMore(elem.rule, Some((sep.rule, self.2)))),
                 fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
@@ -218,7 +218,7 @@ mod build {
     pub struct Concat<A, B>(A, B);
 
     impl<Pat: Eq + Hash, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Concat<A, B> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let a = self.0.finish(cx);
             let b = self.1.finish(cx);
 
@@ -228,7 +228,7 @@ mod build {
                 _ => {}
             }
 
-            RuleWithNamedFields {
+            RuleWithFields {
                 rule: cx.intern(Rule::Concat([a.rule, b.rule])),
                 fields: Fields::aggregate(cx, [a.fields, b.fields].iter().cloned()),
             }
@@ -238,12 +238,12 @@ mod build {
     pub struct Or<A, B>(A, B);
 
     impl<Pat: Eq + Hash, A: Finish<Pat>, B: Finish<Pat>> Finish<Pat> for Or<A, B> {
-        fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
+        fn finish(self, cx: &Context<Pat>) -> RuleWithFields {
             let a = self.0.finish(cx);
             let b = self.1.finish(cx);
 
             match (&cx[a.rule], &cx[a.fields]) {
-                (Rule::Or(a_rules), Fields::Leaf(None)) => RuleWithNamedFields {
+                (Rule::Or(a_rules), Fields::Leaf(None)) => RuleWithFields {
                     rule: cx.intern(Rule::Or(
                         a_rules.iter().cloned().chain(iter::once(b.rule)).collect(),
                     )),
@@ -254,7 +254,7 @@ mod build {
                             .chain(iter::once(b.fields)),
                     ),
                 },
-                (Rule::Or(a_rules), Fields::Aggregate(a_children)) => RuleWithNamedFields {
+                (Rule::Or(a_rules), Fields::Aggregate(a_children)) => RuleWithFields {
                     rule: cx.intern(Rule::Or(
                         a_rules.iter().cloned().chain(iter::once(b.rule)).collect(),
                     )),
@@ -263,7 +263,7 @@ mod build {
                         a_children.iter().cloned().chain(iter::once(b.fields)),
                     ),
                 },
-                _ => RuleWithNamedFields {
+                _ => RuleWithFields {
                     rule: cx.intern(Rule::Or(vec![a.rule, b.rule])),
                     fields: Fields::aggregate(cx, [a.fields, b.fields].iter().cloned()),
                 },
@@ -283,7 +283,7 @@ mod build {
     }
 
     impl<R> Build<R> {
-        pub fn finish<Pat>(self, cx: &Context<Pat>) -> RuleWithNamedFields
+        pub fn finish<Pat>(self, cx: &Context<Pat>) -> RuleWithFields
         where
             R: Finish<Pat>,
         {
@@ -304,7 +304,7 @@ mod build {
     }
 
     /// Helper macro to provide methods and operator overloads on both
-    /// `RuleWithNamedFields` and `Build<R>`, instead of just one of them.
+    /// `RuleWithFields` and `Build<R>`, instead of just one of them.
     macro_rules! builder_impls {
         (impl<$($g:ident),*> $Self:ty) => {
             impl<$($g),*> $Self {
@@ -360,7 +360,7 @@ mod build {
     }
 
     builder_impls!(impl<R> Build<R>);
-    builder_impls!(impl<> RuleWithNamedFields);
+    builder_impls!(impl<> RuleWithFields);
 }
 
 pub use self::build::{call, eat, empty};
@@ -407,7 +407,7 @@ impl IRule {
     pub fn node_shape<Pat: Eq + Hash>(
         self,
         cx: &Context<Pat>,
-        named_rules: Option<&IndexMap<IStr, RuleWithNamedFields>>,
+        named_rules: Option<&IndexMap<IStr, RuleWithFields>>,
     ) -> NodeShape<Self> {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => NodeShape::Opaque,
@@ -574,31 +574,24 @@ pub trait MatchesEmpty {
 
 pub trait Folder<'cx, Pat: 'cx + Eq + Hash>: Sized {
     fn cx(&self) -> &'cx Context<Pat>;
-    fn fold_leaf(&mut self, rule: RuleWithNamedFields) -> RuleWithNamedFields {
+    fn fold_leaf(&mut self, rule: RuleWithFields) -> RuleWithFields {
         rule
     }
-    fn fold_concat(
-        &mut self,
-        left: RuleWithNamedFields,
-        right: RuleWithNamedFields,
-    ) -> RuleWithNamedFields {
+    fn fold_concat(&mut self, left: RuleWithFields, right: RuleWithFields) -> RuleWithFields {
         (left.fold(self) + right.fold(self)).finish(self.cx())
     }
-    fn fold_or(
-        &mut self,
-        mut rules: impl Iterator<Item = RuleWithNamedFields>,
-    ) -> RuleWithNamedFields {
+    fn fold_or(&mut self, mut rules: impl Iterator<Item = RuleWithFields>) -> RuleWithFields {
         let first = rules.next().unwrap().fold(self);
         rules.fold(first, |or, rule| (or | rule.fold(self)).finish(self.cx()))
     }
-    fn fold_opt(&mut self, rule: RuleWithNamedFields) -> RuleWithNamedFields {
+    fn fold_opt(&mut self, rule: RuleWithFields) -> RuleWithFields {
         rule.fold(self).opt().finish(self.cx())
     }
     fn fold_repeat_many(
         &mut self,
-        elem: RuleWithNamedFields,
-        sep: Option<(RuleWithNamedFields, SepKind)>,
-    ) -> RuleWithNamedFields {
+        elem: RuleWithFields,
+        sep: Option<(RuleWithFields, SepKind)>,
+    ) -> RuleWithFields {
         let elem = elem.fold(self);
         let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
         match sep {
@@ -608,9 +601,9 @@ pub trait Folder<'cx, Pat: 'cx + Eq + Hash>: Sized {
     }
     fn fold_repeat_more(
         &mut self,
-        elem: RuleWithNamedFields,
-        sep: Option<(RuleWithNamedFields, SepKind)>,
-    ) -> RuleWithNamedFields {
+        elem: RuleWithFields,
+        sep: Option<(RuleWithFields, SepKind)>,
+    ) -> RuleWithFields {
         let elem = elem.fold(self);
         let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
         match sep {
@@ -620,12 +613,12 @@ pub trait Folder<'cx, Pat: 'cx + Eq + Hash>: Sized {
     }
 }
 
-impl RuleWithNamedFields {
+impl RuleWithFields {
     pub fn fold<'cx, Pat: 'cx + Eq + Hash>(self, folder: &mut impl Folder<'cx, Pat>) -> Self {
         let cx = folder.cx();
         let aggregate_fields = match cx[self.fields] {
             Fields::Leaf(Some(field)) => {
-                let mut rule = RuleWithNamedFields {
+                let mut rule = RuleWithFields {
                     rule: self.rule,
                     fields: field.sub,
                 }
@@ -639,7 +632,7 @@ impl RuleWithNamedFields {
             Fields::Leaf(None) => &[][..],
             Fields::Aggregate(ref children) => children,
         };
-        let field_rule = |rule, i| RuleWithNamedFields {
+        let field_rule = |rule, i| RuleWithFields {
             rule,
             fields: aggregate_fields
                 .get(i)
@@ -672,13 +665,13 @@ impl RuleWithNamedFields {
     pub fn insert_whitespace<Pat: Eq + Hash>(
         self,
         cx: &Context<Pat>,
-        whitespace: RuleWithNamedFields,
+        whitespace: RuleWithFields,
     ) -> Self {
         assert_eq!(cx[whitespace.fields], Fields::Leaf(None));
 
         struct WhitespaceInserter<'cx, Pat> {
             cx: &'cx Context<Pat>,
-            whitespace: RuleWithNamedFields,
+            whitespace: RuleWithFields,
         }
 
         impl<'cx, Pat: Eq + Hash> Folder<'cx, Pat> for WhitespaceInserter<'cx, Pat> {
@@ -691,16 +684,16 @@ impl RuleWithNamedFields {
             // `A? WS B`, which has an incorrect leading whitespace.
             fn fold_concat(
                 &mut self,
-                left: RuleWithNamedFields,
-                right: RuleWithNamedFields,
-            ) -> RuleWithNamedFields {
+                left: RuleWithFields,
+                right: RuleWithFields,
+            ) -> RuleWithFields {
                 (left.fold(self) + self.whitespace + right.fold(self)).finish(self.cx())
             }
             fn fold_repeat_many(
                 &mut self,
-                elem: RuleWithNamedFields,
-                sep: Option<(RuleWithNamedFields, SepKind)>,
-            ) -> RuleWithNamedFields {
+                elem: RuleWithFields,
+                sep: Option<(RuleWithFields, SepKind)>,
+            ) -> RuleWithFields {
                 let elem = elem.fold(self);
                 let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {
@@ -722,9 +715,9 @@ impl RuleWithNamedFields {
             }
             fn fold_repeat_more(
                 &mut self,
-                elem: RuleWithNamedFields,
-                sep: Option<(RuleWithNamedFields, SepKind)>,
-            ) -> RuleWithNamedFields {
+                elem: RuleWithFields,
+                sep: Option<(RuleWithFields, SepKind)>,
+            ) -> RuleWithFields {
                 let elem = elem.fold(self);
                 let sep = sep.map(|(sep, kind)| (sep.fold(self), kind));
                 match sep {
