@@ -59,7 +59,7 @@ impl Grammar {
             rules: self
                 .rules
                 .into_iter()
-                .map(|(name, rule)| (name, rule.insert_whitespace(cx, whitespace.clone())))
+                .map(|(name, rule)| (name, rule.insert_whitespace(cx, whitespace)))
                 .collect(),
         }
     }

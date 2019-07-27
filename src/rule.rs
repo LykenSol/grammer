@@ -694,7 +694,7 @@ impl RuleWithNamedFields {
                 left: RuleWithNamedFields,
                 right: RuleWithNamedFields,
             ) -> RuleWithNamedFields {
-                (left.fold(self) + self.whitespace.clone() + right.fold(self)).finish(self.cx())
+                (left.fold(self) + self.whitespace + right.fold(self)).finish(self.cx())
             }
             fn fold_repeat_many(
                 &mut self,
@@ -706,23 +706,17 @@ impl RuleWithNamedFields {
                 match sep {
                     // A* => A* % WS
                     None => elem
-                        .repeat_more_sep(self.whitespace.clone(), SepKind::Simple)
+                        .repeat_more_sep(self.whitespace, SepKind::Simple)
                         .finish(self.cx),
                     // A* % B => A* % (WS B WS)
                     Some((sep, SepKind::Simple)) => elem
-                        .repeat_more_sep(
-                            self.whitespace.clone() + sep + self.whitespace.clone(),
-                            SepKind::Simple,
-                        )
+                        .repeat_more_sep(self.whitespace + sep + self.whitespace, SepKind::Simple)
                         .finish(self.cx),
                     // FIXME(cad97) this will insert too many whitespace rules
                     // A* %% B => ???
                     // Currently, A* %% (WS B WS), which allows trailing whitespace incorrectly
                     Some((sep, SepKind::Trailing)) => elem
-                        .repeat_more_sep(
-                            self.whitespace.clone() + sep + self.whitespace.clone(),
-                            SepKind::Trailing,
-                        )
+                        .repeat_more_sep(self.whitespace + sep + self.whitespace, SepKind::Trailing)
                         .finish(self.cx),
                 }
             }
@@ -736,21 +730,17 @@ impl RuleWithNamedFields {
                 match sep {
                     // A+ => A+ % WS
                     None => elem
-                        .repeat_more_sep(self.whitespace.clone(), SepKind::Simple)
+                        .repeat_more_sep(self.whitespace, SepKind::Simple)
                         .finish(self.cx),
                     // A+ % B => A+ % (WS B WS)
                     Some((sep, SepKind::Simple)) => elem
                         .fold(self)
-                        .repeat_more_sep(
-                            self.whitespace.clone() + sep + self.whitespace.clone(),
-                            SepKind::Simple,
-                        )
+                        .repeat_more_sep(self.whitespace + sep + self.whitespace, SepKind::Simple)
                         .finish(self.cx),
                     // A+ %% B => A+ % (WS B WS) (WS B)?
-                    Some((sep, SepKind::Trailing)) => (elem.repeat_more_sep(
-                        self.whitespace.clone() + sep.clone() + self.whitespace.clone(),
-                        SepKind::Simple,
-                    ) + (self.whitespace.clone() + sep).opt())
+                    Some((sep, SepKind::Trailing)) => (elem
+                        .repeat_more_sep(self.whitespace + sep + self.whitespace, SepKind::Simple)
+                        + (self.whitespace + sep).opt())
                     .finish(self.cx),
                 }
             }
