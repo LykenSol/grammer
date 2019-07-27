@@ -1,6 +1,6 @@
-use crate::context::{Context, IRule, IStr};
+use crate::context::{Context, IFields, IRule, IStr};
 use crate::forest::NodeShape;
-use indexmap::{indexmap, IndexMap};
+use indexmap::IndexMap;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fmt;
@@ -8,31 +8,65 @@ use std::hash::Hash;
 use std::iter;
 use std::ops::{Add, BitAnd, BitOr};
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct RuleWithNamedFields {
     pub rule: IRule,
-    pub fields: Fields,
+    pub fields: IFields,
 }
 
-pub type Fields = IndexMap<IStr, Field>;
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SepKind {
+    Simple,
+    Trailing,
+}
 
-#[derive(Clone, Default)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Rule<Pat> {
+    Empty,
+    Eat(Pat),
+    Call(IStr),
+
+    Concat([IRule; 2]),
+    Or(Vec<IRule>),
+
+    Opt(IRule),
+    RepeatMany(IRule, Option<(IRule, SepKind)>),
+    RepeatMore(IRule, Option<(IRule, SepKind)>),
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Field {
-    pub paths: IndexMap<Vec<usize>, Fields>,
+    pub name: IStr,
+    pub sub: IFields,
 }
 
-impl Field {
-    fn prepend_paths(self, i: usize) -> Self {
-        Field {
-            paths: self
-                .paths
-                .into_iter()
-                .map(|(mut path, subfields)| {
-                    path.insert(0, i);
-                    (path, subfields)
-                })
-                .collect(),
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Fields {
+    Leaf(Option<Field>),
+    Aggregate(Vec<IFields>),
+}
+
+impl Fields {
+    fn aggregate<Pat: Eq + Hash>(
+        cx: &Context<Pat>,
+        mut children: impl Iterator<Item = IFields>,
+    ) -> IFields {
+        let empty_leaf = cx.intern(Fields::Leaf(None));
+        let mut empty_count = 0;
+        for child in &mut children {
+            if child != empty_leaf {
+                return cx.intern(Fields::Aggregate(
+                    iter::repeat(empty_leaf)
+                        .take(empty_count)
+                        .chain(iter::once(child))
+                        .chain(children)
+                        .collect(),
+                ));
+            }
+
+            empty_count += 1;
         }
+        empty_leaf
     }
 }
 
@@ -75,7 +109,7 @@ mod build {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Empty),
-                fields: IndexMap::new(),
+                fields: cx.intern(Fields::Leaf(None)),
             }
         }
     }
@@ -86,7 +120,7 @@ mod build {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Eat(self.0)),
-                fields: IndexMap::new(),
+                fields: cx.intern(Fields::Leaf(None)),
             }
         }
     }
@@ -97,7 +131,7 @@ mod build {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Call(cx.intern(self.0))),
-                fields: IndexMap::new(),
+                fields: cx.intern(Fields::Leaf(None)),
             }
         }
     }
@@ -106,21 +140,14 @@ mod build {
 
     impl<Pat: Eq + Hash, R: Finish<Pat>> Finish<Pat> for Field<'_, R> {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
-            let mut rule = self.0.finish(cx);
-            let path = match cx[rule.rule] {
-                Rule::RepeatMany(rule, _) | Rule::RepeatMore(rule, _) => match cx[rule] {
-                    Rule::Eat(_) | Rule::Call(_) => vec![],
-                    _ => unimplemented!(),
-                },
-                Rule::Opt(_) => vec![0],
-                _ => vec![],
-            };
-            rule.fields = indexmap! {
-                cx.intern(self.1) => super::Field {
-                    paths: indexmap! { path => rule.fields },
-                },
-            };
-            rule
+            let rule = self.0.finish(cx);
+            RuleWithNamedFields {
+                rule: rule.rule,
+                fields: cx.intern(Fields::Leaf(Some(super::Field {
+                    name: cx.intern(self.1),
+                    sub: rule.fields,
+                }))),
+            }
         }
     }
 
@@ -131,11 +158,7 @@ mod build {
             let rule = self.0.finish(cx);
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Opt(rule.rule)),
-                fields: rule
-                    .fields
-                    .into_iter()
-                    .map(|(name, field)| (name, field.prepend_paths(0)))
-                    .collect(),
+                fields: Fields::aggregate(cx, iter::once(rule.fields)),
             }
         }
     }
@@ -147,11 +170,7 @@ mod build {
             let elem = self.0.finish(cx);
             RuleWithNamedFields {
                 rule: cx.intern(Rule::RepeatMany(elem.rule, None)),
-                fields: elem
-                    .fields
-                    .into_iter()
-                    .map(|(name, field)| (name, field.prepend_paths(0)))
-                    .collect(),
+                fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
         }
     }
@@ -162,14 +181,10 @@ mod build {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
-            assert!(sep.fields.is_empty());
+            assert_eq!(cx[sep.fields], Fields::Leaf(None));
             RuleWithNamedFields {
                 rule: cx.intern(Rule::RepeatMany(elem.rule, Some((sep.rule, self.2)))),
-                fields: elem
-                    .fields
-                    .into_iter()
-                    .map(|(name, field)| (name, field.prepend_paths(0)))
-                    .collect(),
+                fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
         }
     }
@@ -181,11 +196,7 @@ mod build {
             let elem = self.0.finish(cx);
             RuleWithNamedFields {
                 rule: cx.intern(Rule::RepeatMore(elem.rule, None)),
-                fields: elem
-                    .fields
-                    .into_iter()
-                    .map(|(name, field)| (name, field.prepend_paths(0)))
-                    .collect(),
+                fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
         }
     }
@@ -196,14 +207,10 @@ mod build {
         fn finish(self, cx: &Context<Pat>) -> RuleWithNamedFields {
             let elem = self.0.finish(cx);
             let sep = self.1.finish(cx);
-            assert!(sep.fields.is_empty());
+            assert_eq!(cx[sep.fields], Fields::Leaf(None));
             RuleWithNamedFields {
                 rule: cx.intern(Rule::RepeatMore(elem.rule, Some((sep.rule, self.2)))),
-                fields: elem
-                    .fields
-                    .into_iter()
-                    .map(|(name, field)| (name, field.prepend_paths(0)))
-                    .collect(),
+                fields: Fields::aggregate(cx, iter::once(elem.fields)),
             }
         }
     }
@@ -216,23 +223,14 @@ mod build {
             let b = self.1.finish(cx);
 
             match (&cx[a.rule], &cx[b.rule]) {
-                (Rule::Empty, _) if a.fields.is_empty() => return b,
-                (_, Rule::Empty) if b.fields.is_empty() => return a,
+                (Rule::Empty, _) if cx[a.fields] == Fields::Leaf(None) => return b,
+                (_, Rule::Empty) if cx[b.fields] == Fields::Leaf(None) => return a,
                 _ => {}
             }
 
-            let mut fields: IndexMap<_, _> = a
-                .fields
-                .into_iter()
-                .map(|(name, field)| (name, field.prepend_paths(0)))
-                .collect();
-            for (name, field) in b.fields {
-                assert!(!fields.contains_key(&name), "duplicate field {}", &cx[name]);
-                fields.insert(name, field.prepend_paths(1));
-            }
             RuleWithNamedFields {
                 rule: cx.intern(Rule::Concat([a.rule, b.rule])),
-                fields,
+                fields: Fields::aggregate(cx, [a.fields, b.fields].iter().cloned()),
             }
         }
     }
@@ -244,31 +242,31 @@ mod build {
             let a = self.0.finish(cx);
             let b = self.1.finish(cx);
 
-            let (old_rules, a, mut fields) = match cx[a.rule] {
-                Rule::Or(ref rules) => (&rules[..], None, a.fields),
-                _ => (&[][..], Some(a), IndexMap::new()),
-            };
-
-            let new_rules = a
-                .into_iter()
-                .chain(iter::once(b))
-                .enumerate()
-                .map(|(i, rule)| {
-                    for (name, field) in rule.fields {
-                        fields
-                            .entry(name)
-                            .or_default()
-                            .paths
-                            .extend(field.prepend_paths(old_rules.len() + i).paths);
-                    }
-
-                    rule.rule
-                });
-            let rules = old_rules.iter().cloned().chain(new_rules).collect();
-
-            RuleWithNamedFields {
-                rule: cx.intern(Rule::Or(rules)),
-                fields,
+            match (&cx[a.rule], &cx[a.fields]) {
+                (Rule::Or(a_rules), Fields::Leaf(None)) => RuleWithNamedFields {
+                    rule: cx.intern(Rule::Or(
+                        a_rules.iter().cloned().chain(iter::once(b.rule)).collect(),
+                    )),
+                    fields: Fields::aggregate(
+                        cx,
+                        iter::repeat(a.fields)
+                            .take(a_rules.len())
+                            .chain(iter::once(b.fields)),
+                    ),
+                },
+                (Rule::Or(a_rules), Fields::Aggregate(a_children)) => RuleWithNamedFields {
+                    rule: cx.intern(Rule::Or(
+                        a_rules.iter().cloned().chain(iter::once(b.rule)).collect(),
+                    )),
+                    fields: Fields::aggregate(
+                        cx,
+                        a_children.iter().cloned().chain(iter::once(b.fields)),
+                    ),
+                },
+                _ => RuleWithNamedFields {
+                    rule: cx.intern(Rule::Or(vec![a.rule, b.rule])),
+                    fields: Fields::aggregate(cx, [a.fields, b.fields].iter().cloned()),
+                },
             }
         }
     }
@@ -367,47 +365,7 @@ mod build {
 
 pub use self::build::{call, eat, empty};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SepKind {
-    Simple,
-    Trailing,
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Rule<Pat> {
-    Empty,
-    Eat(Pat),
-    Call(IStr),
-
-    Concat([IRule; 2]),
-    Or(Vec<IRule>),
-
-    Opt(IRule),
-    RepeatMany(IRule, Option<(IRule, SepKind)>),
-    RepeatMore(IRule, Option<(IRule, SepKind)>),
-}
-
 impl IRule {
-    pub fn field_is_refutable<Pat>(self, cx: &Context<Pat>, field: &Field) -> bool {
-        if field.paths.len() > 1 {
-            true
-        } else {
-            self.field_path_is_refutable(cx, field.paths.get_index(0).unwrap().0)
-        }
-    }
-
-    pub fn field_path_is_refutable<Pat>(self, cx: &Context<Pat>, path: &[usize]) -> bool {
-        match cx[self] {
-            Rule::Empty
-            | Rule::Eat(_)
-            | Rule::Call(_)
-            | Rule::RepeatMany(..)
-            | Rule::RepeatMore(..) => false,
-            Rule::Concat(rules) => rules[path[0]].field_path_is_refutable(cx, &path[1..]),
-            Rule::Or(..) | Rule::Opt(_) => true,
-        }
-    }
-
     pub fn node_desc<Pat>(self, cx: &Context<Pat>) -> String
     where
         Pat: fmt::Debug,
@@ -454,7 +412,7 @@ impl IRule {
         match cx[self] {
             Rule::Empty | Rule::Eat(_) => NodeShape::Opaque,
             Rule::Call(name) => match named_rules.map(|rules| &rules[&name]) {
-                Some(rule) if !rule.fields.is_empty() => NodeShape::Alias(rule.rule),
+                Some(rule) if cx[rule.fields] != Fields::Leaf(None) => NodeShape::Alias(rule.rule),
                 _ => NodeShape::Opaque,
             },
             Rule::Concat([left, right]) => NodeShape::Split(left, right),
@@ -663,34 +621,32 @@ pub trait Folder<'cx, Pat: 'cx + Eq + Hash>: Sized {
 }
 
 impl RuleWithNamedFields {
-    // HACK(eddyb) this is pretty expensive, find a better way
-    fn filter_fields<'a>(&'a self, i: Option<usize>) -> impl Iterator<Item = (IStr, Field)> + 'a {
-        self.fields.iter().filter_map(move |(&name, field)| {
-            let paths: IndexMap<_, _> = field
-                .paths
-                .iter()
-                .filter_map(move |(path, subfields)| {
-                    if path.first().cloned() == i {
-                        Some((path.get(1..).unwrap_or(&[]).to_vec(), subfields.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !paths.is_empty() {
-                Some((name, Field { paths }))
-            } else {
-                None
-            }
-        })
-    }
-
     pub fn fold<'cx, Pat: 'cx + Eq + Hash>(self, folder: &mut impl Folder<'cx, Pat>) -> Self {
+        let cx = folder.cx();
+        let aggregate_fields = match cx[self.fields] {
+            Fields::Leaf(Some(field)) => {
+                let mut rule = RuleWithNamedFields {
+                    rule: self.rule,
+                    fields: field.sub,
+                }
+                .fold(folder);
+                rule.fields = cx.intern(Fields::Leaf(Some(Field {
+                    name: field.name,
+                    sub: rule.fields,
+                })));
+                return rule;
+            }
+            Fields::Leaf(None) => &[][..],
+            Fields::Aggregate(ref children) => children,
+        };
         let field_rule = |rule, i| RuleWithNamedFields {
             rule,
-            fields: self.filter_fields(Some(i)).collect(),
+            fields: aggregate_fields
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| cx.intern(Fields::Leaf(None))),
         };
-        let mut rule = match folder.cx()[self.rule] {
+        match cx[self.rule] {
             Rule::Empty | Rule::Eat(_) | Rule::Call(_) => return folder.fold_leaf(self),
             Rule::Concat([left, right]) => {
                 folder.fold_concat(field_rule(left, 0), field_rule(right, 1))
@@ -710,9 +666,7 @@ impl RuleWithNamedFields {
                 field_rule(elem, 0),
                 sep.map(|(sep, kind)| (field_rule(sep, 1), kind)),
             ),
-        };
-        rule.fields.extend(self.filter_fields(None));
-        rule
+        }
     }
 
     pub fn insert_whitespace<Pat: Eq + Hash>(
@@ -720,7 +674,7 @@ impl RuleWithNamedFields {
         cx: &Context<Pat>,
         whitespace: RuleWithNamedFields,
     ) -> Self {
-        assert!(whitespace.fields.is_empty());
+        assert_eq!(cx[whitespace.fields], Fields::Leaf(None));
 
         struct WhitespaceInserter<'cx, Pat> {
             cx: &'cx Context<Pat>,

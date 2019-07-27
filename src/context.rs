@@ -1,4 +1,4 @@
-use crate::rule::Rule;
+use crate::rule::{Fields, Rule};
 use elsa::FrozenVec;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -93,6 +93,7 @@ macro_rules! interners {
 interners! {
     IStr => str,
     IRule => Rule<Pat>,
+    IFields => Fields,
 }
 
 impl<Pat> InternInCx<Pat> for &'_ str {
@@ -115,5 +116,20 @@ impl<Pat: Eq + Hash> InternInCx<Pat> for Rule<Pat> {
 
     fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned {
         IRule(cx.interners.IRule.intern(self))
+    }
+}
+
+// FIXME(eddyb) automate this away somehow.
+impl AsRef<Self> for Fields {
+    fn as_ref(&self) -> &Self {
+        self
+    }
+}
+
+impl<Pat> InternInCx<Pat> for Fields {
+    type Interned = IFields;
+
+    fn intern_in_cx(self, cx: &Context<Pat>) -> Self::Interned {
+        IFields(cx.interners.IFields.intern(self))
     }
 }
