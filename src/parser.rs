@@ -26,7 +26,7 @@ pub struct ParseError<A, Pat> {
 
 pub type ParseResult<A, Pat, T> = Result<T, ParseError<A, Pat>>;
 
-impl<'i, P, G, I: Input, Pat> Parser<'_, 'i, G, I, Pat>
+impl<'i, P, G, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::NodeKind`, but that's ignored currently.
@@ -57,10 +57,13 @@ where
                 remaining: range,
             });
 
-            let error = ParseError {
+            let mut error = ParseError {
                 at: I::source_info_point(&state.forest.input, state.last_input_pos),
                 expected: state.expected_pats,
             };
+            error.expected.sort();
+            error.expected.dedup();
+
             match result {
                 None => Err(error),
                 Some(node) => {
@@ -128,7 +131,7 @@ where
         match self.state.forest.input(self.remaining).match_left(&pat) {
             Some(n) => {
                 let (matching, after, _) = self.remaining.split_at(n);
-                if n > 0 {
+                if after.first() > self.state.last_input_pos {
                     self.state.last_input_pos = after.first();
                     self.state.expected_pats.clear();
                 }
