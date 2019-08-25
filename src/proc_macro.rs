@@ -139,6 +139,10 @@ impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<
         match &self.0[..] {
             [] => f.write_str("\"\""),
             [pat] => pat.fmt(f),
+            [FlatTokenPat::Punct {
+                ch: Some('\''),
+                joint: Some(true),
+            }, FlatTokenPat::Ident(None)] => f.write_str("LIFETIME"),
             pats => {
                 let mut was_joint = true;
                 f.write_str("\"")?;
