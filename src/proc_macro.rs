@@ -152,7 +152,7 @@ impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<
                             was_joint = *joint == Some(true);
                         }
                         FlatTokenPat::Ident(Some(ident)) => {
-                            write!(f, "\"{}\"", ident.as_ref())?;
+                            write!(f, "{}", ident.as_ref())?;
                             was_joint = false;
                         }
                         _ => unreachable!(),
