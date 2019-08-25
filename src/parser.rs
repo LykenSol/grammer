@@ -128,7 +128,7 @@ where
         match self.state.forest.input(self.remaining).match_left(&pat) {
             Some(n) => {
                 let (matching, after, _) = self.remaining.split_at(n);
-                if n > 0 {
+                if after.first() > self.state.last_input_pos {
                     self.state.last_input_pos = after.first();
                     self.state.expected_pats.clear();
                 }
