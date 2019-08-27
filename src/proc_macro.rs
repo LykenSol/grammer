@@ -13,7 +13,7 @@ pub fn builtin(cx: &Context) -> crate::Grammar {
     let mut g = crate::Grammar::new();
 
     let ident = eat(Pat(vec![FlatTokenPat::Ident(None)])).finish(cx);
-    g.define(cx.intern("IDENT"), ident.clone());
+    g.define(cx.intern("IDENT"), ident);
 
     g.define(
         cx.intern("LIFETIME"),
@@ -32,10 +32,10 @@ pub fn builtin(cx: &Context) -> crate::Grammar {
         joint: None,
     }]))
     .finish(cx);
-    g.define(cx.intern("PUNCT"), punct.clone());
+    g.define(cx.intern("PUNCT"), punct);
 
     let literal = eat(Pat(vec![FlatTokenPat::Literal])).finish(cx);
-    g.define(cx.intern("LITERAL"), literal.clone());
+    g.define(cx.intern("LITERAL"), literal);
 
     let delim = |c| eat(FlatTokenPat::Delim(c));
     let group = |open, close| delim(open) + call("TOKEN_TREE").repeat_many() + delim(close);

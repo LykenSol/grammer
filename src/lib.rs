@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 pub struct Grammar {
-    pub rules: IndexMap<IStr, rule::RuleWithNamedFields>,
+    pub rules: IndexMap<IStr, rule::RuleWithFields>,
 }
 
 impl Grammar {
@@ -44,7 +44,7 @@ impl Grammar {
             rules: IndexMap::new(),
         }
     }
-    pub fn define(&mut self, name: IStr, rule: rule::RuleWithNamedFields) {
+    pub fn define(&mut self, name: IStr, rule: rule::RuleWithFields) {
         self.rules.insert(name, rule);
     }
     pub fn extend(&mut self, other: Self) {
@@ -53,13 +53,13 @@ impl Grammar {
     pub fn insert_whitespace<Pat: Eq + Hash>(
         self,
         cx: &Context<Pat>,
-        whitespace: rule::RuleWithNamedFields,
+        whitespace: rule::RuleWithFields,
     ) -> Self {
         Grammar {
             rules: self
                 .rules
                 .into_iter()
-                .map(|(name, rule)| (name, rule.insert_whitespace(cx, whitespace.clone())))
+                .map(|(name, rule)| (name, rule.insert_whitespace(cx, whitespace)))
                 .collect(),
         }
     }
