@@ -1,7 +1,7 @@
 use crate::high::{type_lambda, ExistsL, PairL};
 use crate::input::{Input, Range};
 use indexing::{self, Container};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::Hash;
 use std::io::{self, Write};
@@ -11,7 +11,7 @@ use std::str;
 pub enum NodeShape<P> {
     Opaque,
     Alias(P),
-    Choice,
+    Choice(usize),
     Opt(P),
     Split(P, P),
 }
@@ -21,7 +21,7 @@ impl<P: fmt::Display> fmt::Display for NodeShape<P> {
         match self {
             NodeShape::Opaque => write!(f, "Opaque"),
             NodeShape::Alias(inner) => write!(f, "Alias({})", inner),
-            NodeShape::Choice => write!(f, "Choice"),
+            NodeShape::Choice(count) => write!(f, "Choice({})", count),
             NodeShape::Opt(inner) => write!(f, "Opt({})", inner),
             NodeShape::Split(left, right) => write!(f, "Split({}, {})", left, right),
         }
@@ -33,7 +33,7 @@ impl<P> NodeShape<P> {
         match self {
             NodeShape::Opaque => NodeShape::Opaque,
             NodeShape::Alias(inner) => NodeShape::Alias(f(inner)),
-            NodeShape::Choice => NodeShape::Choice,
+            NodeShape::Choice(count) => NodeShape::Choice(count),
             NodeShape::Opt(inner) => NodeShape::Opt(f(inner)),
             NodeShape::Split(left, right) => NodeShape::Split(f(left), f(right)),
         }
@@ -47,9 +47,10 @@ impl<P> NodeShape<P> {
 /// all the information can be hardcoded, but in more dynamic settings, this
 /// might contain e.g. a reference to a context.
 pub trait GrammarReflector {
-    type NodeKind: fmt::Debug + Ord + Hash + Copy;
+    type NodeKind: fmt::Debug + Eq + Hash + Copy;
 
     fn node_shape(&self, kind: Self::NodeKind) -> NodeShape<Self::NodeKind>;
+    fn node_shape_choice_get(&self, kind: Self::NodeKind, i: usize) -> Self::NodeKind;
     fn node_desc(&self, kind: Self::NodeKind) -> String;
 }
 
@@ -76,8 +77,7 @@ pub struct ParseForest<'i, G: GrammarReflector, I: Input> {
     pub grammar: G,
     // HACK(eddyb) `pub(crate)` only for `parser`.
     pub(crate) input: Container<'i, I::Container>,
-    pub(crate) possible_choices: HashMap<Node<'i, G::NodeKind>, BTreeSet<G::NodeKind>>,
-    pub(crate) possible_splits: HashMap<Node<'i, G::NodeKind>, BTreeSet<usize>>,
+    pub(crate) possibilities: HashMap<Node<'i, G::NodeKind>, BTreeSet<usize>>,
 }
 
 type_lambda! {
@@ -94,7 +94,7 @@ impl<'i, P, G, I: Input> ParseForest<'i, G, I>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::NodeKind`, but that's ignored currently.
-    P: fmt::Debug + Ord + Hash + Copy,
+    P: fmt::Debug + Eq + Hash + Copy,
     G: GrammarReflector<NodeKind = P>,
 {
     pub fn input(&self, range: Range<'i>) -> &I::Slice {
@@ -107,14 +107,14 @@ where
 
     pub fn one_choice(&self, node: Node<'i, P>) -> Result<Node<'i, P>, MoreThanOne> {
         match self.grammar.node_shape(node.kind) {
-            NodeShape::Choice => {
-                let choices = &self.possible_choices[&node];
+            NodeShape::Choice(_) => {
+                let choices = &self.possibilities[&node];
                 if choices.len() > 1 {
                     return Err(MoreThanOne);
                 }
                 let &choice = choices.iter().next().unwrap();
                 Ok(Node {
-                    kind: choice,
+                    kind: self.grammar.node_shape_choice_get(node.kind, choice),
                     range: node.range,
                 })
             }
@@ -130,14 +130,14 @@ where
         P: 'a,
     {
         match self.grammar.node_shape(node.kind) {
-            NodeShape::Choice => self
-                .possible_choices
+            NodeShape::Choice(_) => self
+                .possibilities
                 .get(&node)
                 .into_iter()
                 .flatten()
                 .cloned()
-                .map(move |kind| Node {
-                    kind,
+                .map(move |choice| Node {
+                    kind: self.grammar.node_shape_choice_get(node.kind, choice),
                     range: node.range,
                 }),
             shape => unreachable!("all_choices({:?}): non-choice shape {:?}", node, shape),
@@ -147,7 +147,7 @@ where
     pub fn one_split(&self, node: Node<'i, P>) -> Result<(Node<'i, P>, Node<'i, P>), MoreThanOne> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => {
-                let splits = &self.possible_splits[&node];
+                let splits = &self.possibilities[&node];
                 if splits.len() > 1 {
                     return Err(MoreThanOne);
                 }
@@ -177,7 +177,7 @@ where
     {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => self
-                .possible_splits
+                .possibilities
                 .get(&node)
                 .into_iter()
                 .flatten()
@@ -227,13 +227,8 @@ where
 
     pub fn dump_graphviz(&self, out: &mut dyn Write) -> io::Result<()> {
         writeln!(out, "digraph forest {{")?;
-        let mut queue: VecDeque<_> = self
-            .possible_choices
-            .keys()
-            .chain(self.possible_splits.keys())
-            .cloned()
-            .collect();
-        let mut seen: BTreeSet<_> = queue.iter().cloned().collect();
+        let mut queue: VecDeque<_> = self.possibilities.keys().cloned().collect();
+        let mut seen: HashSet<_> = queue.iter().cloned().collect();
         let mut p = 0;
         let node_name = |Node { kind, range }| {
             format!(
@@ -276,7 +271,7 @@ where
                     }
                 }
 
-                NodeShape::Choice => {
+                NodeShape::Choice(_) => {
                     for child in self.all_choices(source) {
                         add_children(&[("s", child)])?;
                     }

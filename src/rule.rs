@@ -416,7 +416,7 @@ impl IRule {
                 _ => NodeShape::Opaque,
             },
             Rule::Concat([left, right]) => NodeShape::Split(left, right),
-            Rule::Or(_) => NodeShape::Choice,
+            Rule::Or(ref cases) => NodeShape::Choice(cases.len()),
             Rule::Opt(rule) => NodeShape::Opt(rule),
             Rule::RepeatMany(elem, sep) => NodeShape::Opt(cx.intern(Rule::RepeatMore(elem, sep))),
             Rule::RepeatMore(rule, None) => {
