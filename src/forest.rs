@@ -105,21 +105,27 @@ where
         I::source_info(&self.input, range)
     }
 
-    pub fn one_choice(&self, node: Node<'i, P>) -> Result<Node<'i, P>, MoreThanOne> {
+    // NOTE(eddyb) this is a private helper and should never be exported.
+    fn choice_child(&self, node: Node<'i, P>, choice: usize) -> Node<'i, P> {
         match self.grammar.node_shape(node.kind) {
-            NodeShape::Choice(_) => {
-                let choices = &self.possibilities[&node];
-                if choices.len() > 1 {
-                    return Err(MoreThanOne);
-                }
-                let &choice = choices.iter().next().unwrap();
-                Ok(Node {
-                    kind: self.grammar.node_shape_choice_get(node.kind, choice),
-                    range: node.range,
-                })
-            }
-            shape => unreachable!("one_choice({:?}): non-choice shape {:?}", node, shape),
+            NodeShape::Choice(_) => Node {
+                kind: self.grammar.node_shape_choice_get(node.kind, choice),
+                range: node.range,
+            },
+            shape => unreachable!(
+                "choice_child({:?}, {}): non-choice shape {:?}",
+                node, choice, shape
+            ),
         }
+    }
+
+    pub fn one_choice(&self, node: Node<'i, P>) -> Result<Node<'i, P>, MoreThanOne> {
+        let choices = &self.possibilities[&node];
+        if choices.len() > 1 {
+            return Err(MoreThanOne);
+        }
+        let &choice = choices.iter().next().unwrap();
+        Ok(self.choice_child(node, choice))
     }
 
     pub fn all_choices<'a>(
@@ -129,31 +135,18 @@ where
     where
         P: 'a,
     {
-        match self.grammar.node_shape(node.kind) {
-            NodeShape::Choice(_) => self
-                .possibilities
-                .get(&node)
-                .into_iter()
-                .flatten()
-                .cloned()
-                .map(move |choice| Node {
-                    kind: self.grammar.node_shape_choice_get(node.kind, choice),
-                    range: node.range,
-                }),
-            shape => unreachable!("all_choices({:?}): non-choice shape {:?}", node, shape),
-        }
+        self.possibilities[&node]
+            .iter()
+            .cloned()
+            .map(move |choice| self.choice_child(node, choice))
     }
 
-    pub fn one_split(&self, node: Node<'i, P>) -> Result<(Node<'i, P>, Node<'i, P>), MoreThanOne> {
+    // NOTE(eddyb) this is a private helper and should never be exported.
+    fn split_children(&self, node: Node<'i, P>, split: usize) -> (Node<'i, P>, Node<'i, P>) {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => {
-                let splits = &self.possibilities[&node];
-                if splits.len() > 1 {
-                    return Err(MoreThanOne);
-                }
-                let &split = splits.iter().next().unwrap();
                 let (left, right, _) = node.range.split_at(split);
-                Ok((
+                (
                     Node {
                         kind: left_kind,
                         range: Range(left),
@@ -162,10 +155,22 @@ where
                         kind: right_kind,
                         range: Range(right),
                     },
-                ))
+                )
             }
-            shape => unreachable!("one_split({:?}): non-split shape {:?}", node, shape),
+            shape => unreachable!(
+                "split_children({:?}, {}): non-split shape {:?}",
+                node, split, shape
+            ),
         }
+    }
+
+    pub fn one_split(&self, node: Node<'i, P>) -> Result<(Node<'i, P>, Node<'i, P>), MoreThanOne> {
+        let splits = &self.possibilities[&node];
+        if splits.len() > 1 {
+            return Err(MoreThanOne);
+        }
+        let &split = splits.iter().next().unwrap();
+        Ok(self.split_children(node, split))
     }
 
     pub fn all_splits<'a>(
@@ -175,28 +180,10 @@ where
     where
         P: 'a,
     {
-        match self.grammar.node_shape(node.kind) {
-            NodeShape::Split(left_kind, right_kind) => self
-                .possibilities
-                .get(&node)
-                .into_iter()
-                .flatten()
-                .cloned()
-                .map(move |i| {
-                    let (left, right, _) = node.range.split_at(i);
-                    (
-                        Node {
-                            kind: left_kind,
-                            range: Range(left),
-                        },
-                        Node {
-                            kind: right_kind,
-                            range: Range(right),
-                        },
-                    )
-                }),
-            shape => unreachable!("all_splits({:?}): non-split shape {:?}", node, shape),
-        }
+        self.possibilities[&node]
+            .iter()
+            .cloned()
+            .map(move |split| self.split_children(node, split))
     }
 
     pub fn unpack_alias(&self, node: Node<'i, P>) -> Node<'i, P> {
