@@ -30,7 +30,7 @@ impl<'i, P, G, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat>
 where
     // FIXME(eddyb) these shouldn't be needed, as they are bounds on
     // `GrammarReflector::NodeKind`, but that's ignored currently.
-    P: fmt::Debug + Ord + Hash + Copy,
+    P: fmt::Debug + Eq + Hash + Copy,
     G: GrammarReflector<NodeKind = P>,
 {
     pub fn parse_with(
@@ -44,8 +44,7 @@ where
                 forest: ParseForest {
                     grammar,
                     input,
-                    possible_choices: HashMap::new(),
-                    possible_splits: HashMap::new(),
+                    possibilities: HashMap::new(),
                 },
                 last_input_pos: range.first(),
                 expected_pats: vec![],
@@ -171,10 +170,11 @@ where
         }
     }
 
-    pub fn forest_add_choice(&mut self, kind: P, choice: P) {
+    // FIXME(eddyb) safeguard this against misuse.
+    pub fn forest_add_choice(&mut self, kind: P, choice: usize) {
         self.state
             .forest
-            .possible_choices
+            .possibilities
             .entry(Node {
                 kind,
                 range: self.result,
@@ -188,7 +188,7 @@ where
         self.result = Range(left.range.join(self.result.0).unwrap());
         self.state
             .forest
-            .possible_splits
+            .possibilities
             .entry(Node {
                 kind,
                 range: self.result,
