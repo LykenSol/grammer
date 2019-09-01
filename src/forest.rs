@@ -1,22 +1,23 @@
 use crate::high::{type_lambda, ExistsL, PairL};
 use crate::input::{Input, Range};
 use indexing::{self, Container};
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::str;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NodeShape<P> {
+pub enum NodeShape<T> {
     Opaque,
-    Alias(P),
+    Alias(T),
     Choice(usize),
-    Opt(P),
-    Split(P, P),
+    Opt(T),
+    Split(T, T),
 }
 
-impl<P: fmt::Display> fmt::Display for NodeShape<P> {
+impl<T: fmt::Display> fmt::Display for NodeShape<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NodeShape::Opaque => write!(f, "Opaque"),
@@ -28,8 +29,8 @@ impl<P: fmt::Display> fmt::Display for NodeShape<P> {
     }
 }
 
-impl<P> NodeShape<P> {
-    pub fn map<Q>(self, mut f: impl FnMut(P) -> Q) -> NodeShape<Q> {
+impl<T> NodeShape<T> {
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> NodeShape<U> {
         match self {
             NodeShape::Opaque => NodeShape::Opaque,
             NodeShape::Alias(inner) => NodeShape::Alias(f(inner)),
@@ -54,13 +55,47 @@ pub trait GrammarReflector {
     fn node_desc(&self, kind: Self::NodeKind) -> String;
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Node<'i, P> {
-    pub kind: P,
+pub struct Node<'i, G: GrammarReflector> {
+    pub kind: G::NodeKind,
     pub range: Range<'i>,
 }
 
-impl<P: fmt::Debug> fmt::Debug for Node<'_, P> {
+// FIXME(eddyb) can't derive these on `Node<G>` because that puts bounds on `G`.
+impl<G: GrammarReflector> Copy for Node<'_, G> {}
+impl<G: GrammarReflector> Clone for Node<'_, G> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<G: GrammarReflector> PartialEq for Node<'_, G> {
+    fn eq(&self, other: &Self) -> bool {
+        (self.kind, self.range) == (other.kind, other.range)
+    }
+}
+impl<G: GrammarReflector> Eq for Node<'_, G> {}
+impl<G: GrammarReflector> PartialOrd for Node<'_, G>
+where
+    G::NodeKind: PartialOrd,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        (self.kind, self.range).partial_cmp(&(other.kind, other.range))
+    }
+}
+impl<G: GrammarReflector> Ord for Node<'_, G>
+where
+    G::NodeKind: Ord,
+{
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.kind, self.range).cmp(&(other.kind, other.range))
+    }
+}
+impl<G: GrammarReflector> Hash for Node<'_, G> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.kind, self.range).hash(state);
+    }
+}
+
+impl<G: GrammarReflector> fmt::Debug for Node<'_, G> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -77,26 +112,20 @@ pub struct ParseForest<'i, G: GrammarReflector, I: Input> {
     pub grammar: G,
     // HACK(eddyb) `pub(crate)` only for `parser`.
     pub(crate) input: Container<'i, I::Container>,
-    pub(crate) possibilities: HashMap<Node<'i, G::NodeKind>, BTreeSet<usize>>,
+    pub(crate) possibilities: HashMap<Node<'i, G>, BTreeSet<usize>>,
 }
 
 type_lambda! {
     pub type<'i> ParseForestL<G: GrammarReflector, I: Input> = ParseForest<'i, G, I>;
-    pub type<'i> NodeL<P> = Node<'i, P>;
+    pub type<'i> NodeL<G: GrammarReflector> = Node<'i, G>;
 }
 
-pub type OwnedParseForestAndNode<G, P, I> = ExistsL<PairL<ParseForestL<G, I>, NodeL<P>>>;
+pub type OwnedParseForestAndNode<G, I> = ExistsL<PairL<ParseForestL<G, I>, NodeL<G>>>;
 
 #[derive(Debug)]
 pub struct MoreThanOne;
 
-impl<'i, P, G, I: Input> ParseForest<'i, G, I>
-where
-    // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::NodeKind`, but that's ignored currently.
-    P: fmt::Debug + Eq + Hash + Copy,
-    G: GrammarReflector<NodeKind = P>,
-{
+impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
     pub fn input(&self, range: Range<'i>) -> &I::Slice {
         I::slice(&self.input, range)
     }
@@ -106,7 +135,7 @@ where
     }
 
     // NOTE(eddyb) this is a private helper and should never be exported.
-    fn choice_child(&self, node: Node<'i, P>, choice: usize) -> Node<'i, P> {
+    fn choice_child(&self, node: Node<'i, G>, choice: usize) -> Node<'i, G> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Choice(_) => Node {
                 kind: self.grammar.node_shape_choice_get(node.kind, choice),
@@ -119,7 +148,7 @@ where
         }
     }
 
-    pub fn one_choice(&self, node: Node<'i, P>) -> Result<Node<'i, P>, MoreThanOne> {
+    pub fn one_choice(&self, node: Node<'i, G>) -> Result<Node<'i, G>, MoreThanOne> {
         let choices = &self.possibilities[&node];
         if choices.len() > 1 {
             return Err(MoreThanOne);
@@ -130,10 +159,10 @@ where
 
     pub fn all_choices<'a>(
         &'a self,
-        node: Node<'i, P>,
-    ) -> impl Iterator<Item = Node<'i, P>> + Clone + 'a
+        node: Node<'i, G>,
+    ) -> impl Iterator<Item = Node<'i, G>> + Clone + 'a
     where
-        P: 'a,
+        G::NodeKind: 'a,
     {
         self.possibilities[&node]
             .iter()
@@ -142,7 +171,7 @@ where
     }
 
     // NOTE(eddyb) this is a private helper and should never be exported.
-    fn split_children(&self, node: Node<'i, P>, split: usize) -> (Node<'i, P>, Node<'i, P>) {
+    fn split_children(&self, node: Node<'i, G>, split: usize) -> (Node<'i, G>, Node<'i, G>) {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => {
                 let (left, right, _) = node.range.split_at(split);
@@ -164,7 +193,7 @@ where
         }
     }
 
-    pub fn one_split(&self, node: Node<'i, P>) -> Result<(Node<'i, P>, Node<'i, P>), MoreThanOne> {
+    pub fn one_split(&self, node: Node<'i, G>) -> Result<(Node<'i, G>, Node<'i, G>), MoreThanOne> {
         let splits = &self.possibilities[&node];
         if splits.len() > 1 {
             return Err(MoreThanOne);
@@ -175,10 +204,10 @@ where
 
     pub fn all_splits<'a>(
         &'a self,
-        node: Node<'i, P>,
-    ) -> impl Iterator<Item = (Node<'i, P>, Node<'i, P>)> + Clone + 'a
+        node: Node<'i, G>,
+    ) -> impl Iterator<Item = (Node<'i, G>, Node<'i, G>)> + Clone + 'a
     where
-        P: 'a,
+        G::NodeKind: 'a,
     {
         self.possibilities[&node]
             .iter()
@@ -186,7 +215,7 @@ where
             .map(move |split| self.split_children(node, split))
     }
 
-    pub fn unpack_alias(&self, node: Node<'i, P>) -> Node<'i, P> {
+    pub fn unpack_alias(&self, node: Node<'i, G>) -> Node<'i, G> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Alias(inner) => Node {
                 kind: inner,
@@ -196,7 +225,7 @@ where
         }
     }
 
-    pub fn unpack_opt(&self, node: Node<'i, P>) -> Option<Node<'i, P>> {
+    pub fn unpack_opt(&self, node: Node<'i, G>) -> Option<Node<'i, G>> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Opt(inner) => {
                 if node.range.is_empty() {
@@ -227,7 +256,7 @@ where
         while let Some(source) = queue.pop_front() {
             let source_name = node_name(source);
             writeln!(out, "    {:?} [shape=box]", source_name)?;
-            let mut add_children = |children: &[(&str, Node<'i, P>)]| -> io::Result<()> {
+            let mut add_children = |children: &[(&str, Node<'i, G>)]| -> io::Result<()> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, "    {:?} -> p{}:n", source_name, p)?;
                 for &(port, child) in children {

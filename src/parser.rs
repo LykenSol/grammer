@@ -3,8 +3,6 @@ use crate::high::ErasableL;
 use crate::input::{Input, InputMatch, Range};
 use indexing::{self, Index, Unknown};
 use std::collections::HashMap;
-use std::fmt;
-use std::hash::Hash;
 
 pub struct Parser<'a, 'i, G: GrammarReflector, I: Input, Pat> {
     state: &'a mut ParserState<'i, G, I, Pat>,
@@ -26,18 +24,12 @@ pub struct ParseError<A, Pat> {
 
 pub type ParseResult<A, Pat, T> = Result<T, ParseError<A, Pat>>;
 
-impl<'i, P, G, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat>
-where
-    // FIXME(eddyb) these shouldn't be needed, as they are bounds on
-    // `GrammarReflector::NodeKind`, but that's ignored currently.
-    P: fmt::Debug + Eq + Hash + Copy,
-    G: GrammarReflector<NodeKind = P>,
-{
+impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
     pub fn parse_with(
         grammar: G,
         input: I,
-        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<Node<'i2, P>>,
-    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, P, I>> {
+        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<Node<'i2, G>>,
+    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
             let range = Range(input.range());
             let mut state = ParserState {
@@ -171,7 +163,7 @@ where
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_choice(&mut self, kind: P, choice: usize) {
+    pub fn forest_add_choice(&mut self, kind: G::NodeKind, choice: usize) {
         self.state
             .forest
             .possibilities
@@ -184,7 +176,7 @@ where
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(&mut self, kind: P, left: Node<'i, P>) {
+    pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<'i, G>) {
         self.result = Range(left.range.join(self.result.0).unwrap());
         self.state
             .forest
