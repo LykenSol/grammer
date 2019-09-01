@@ -304,299 +304,491 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
     }
 }
 
-// FIXME(rust-lang/rust#54175) work around iterator adapter compile-time
-// blowup issues by using a makeshift "non-determinism arrow toolkit".
-pub mod nd {
-    use std::iter;
-    use std::marker::PhantomData;
+pub mod typed {
+    use super::{GrammarReflector, MoreThanOne, Node, ParseForest};
+    use crate::input::Input;
 
-    pub trait Arrow: Copy {
-        type Input;
+    #[derive(Clone)]
+    enum Void {}
+
+    // HACK(eddyb) this type uses `T` but is also uninhabited.
+    type PhantomVoid<T> = (Void, std::marker::PhantomData<T>);
+
+    pub trait Shaped {
+        type Shape: ShapeStateLen;
+
+        // FIXME(eddyb) this is always `[usize; Self::Shape::STATE_LEN]`.
+        // (but that doesn't work yet)
+        type State: Default + AsMut<[usize]>;
+    }
+
+    pub trait FromShapeFields<'a, Forest, Node>: Sized {
         type Output;
-        type Iter: Iterator<Item = Self::Output> + Clone;
-        fn apply(&self, x: Self::Input) -> Self::Iter;
 
-        fn map<F: Fn(Self::Output) -> R, R>(self, f: F) -> Map<Self, F> {
-            Map(self, f)
-        }
-        fn then<B: Arrow<Input = Self::Output>>(self, b: B) -> Then<Self, B> {
-            Then(self, b)
-        }
-        fn pairs<B: Arrow>(self, b: B) -> Pairs<Self, B>
+        // FIXME(eddyb) use an array length const here instead when that works.
+        type Fields: Default + AsMut<[Option<Node>]>;
+
+        fn from_shape_fields(forest: &'a Forest, fields: Self::Fields) -> Self::Output;
+
+        fn one(forest: &'a Forest, node: Node) -> Result<Self::Output, MoreThanOne>
         where
-            Self::Output: Copy,
-            B::Input: Copy,
+            Self: Shaped,
+            Self::Shape: Shape<Forest, Node>,
+            Node: Copy,
         {
-            Pairs(self, b)
-        }
-    }
+            let mut state = Self::State::default();
+            let state = state.as_mut();
+            assert_eq!(state.len(), Self::Shape::STATE_LEN);
 
-    macro_rules! derive_copy {
-        ($name:ident<$($param:ident $(: $bound:ident)*),*>) => {
-            impl<$($param $(: $bound)*),*> Copy for $name<$($param),*> {}
-            impl<$($param $(: $bound)*),*> Clone for $name<$($param),*> {
-                fn clone(&self) -> Self {
-                    *self
-                }
+            Self::Shape::init(forest, node, state);
+
+            let mut fields = Self::Fields::default();
+            Self::Shape::read(forest, node, state, fields.as_mut());
+
+            if Self::Shape::step(forest, node, state) {
+                Err(MoreThanOne)
+            } else {
+                Ok(Self::from_shape_fields(forest, fields))
+            }
+        }
+
+        fn all(forest: &'a Forest, node: Node) -> ShapedAllIter<'a, Self, Forest, Node>
+        where
+            Self: Shaped,
+            Self::Shape: Shape<Forest, Node>,
+            Node: Copy,
+        {
+            let mut state = Self::State::default();
+            assert_eq!(state.as_mut().len(), Self::Shape::STATE_LEN);
+
+            Self::Shape::init(forest, node, state.as_mut());
+
+            ShapedAllIter {
+                forest,
+                node,
+                state: Some(state),
             }
         }
     }
 
-    pub struct Id<T>(PhantomData<T>);
-    derive_copy!(Id<T>);
-    impl<T> Id<T> {
-        pub fn new() -> Self {
-            Id(PhantomData)
-        }
-    }
-    impl<T: Clone> Arrow for Id<T> {
-        type Input = T;
-        type Output = T;
-        type Iter = iter::Once<T>;
-        fn apply(&self, x: T) -> Self::Iter {
-            iter::once(x)
-        }
+    pub struct ShapedAllIter<'a, T: Shaped, Forest, Node> {
+        forest: &'a Forest,
+        node: Node,
+        state: Option<T::State>,
     }
 
-    pub struct FromIter<T, F>(F, PhantomData<T>);
-    derive_copy!(FromIter<T, F: Copy>);
-    impl<T, F> FromIter<T, F> {
-        pub fn new(f: F) -> Self {
-            FromIter(f, PhantomData)
-        }
-    }
-    impl<T, F: Copy + Fn(T) -> I, I: Iterator + Clone> Arrow for FromIter<T, F> {
-        type Input = T;
-        type Output = I::Item;
-        type Iter = I;
-        fn apply(&self, x: T) -> I {
-            self.0(x)
-        }
-    }
-
-    pub struct FromIterK<K, T, F>(K, F, PhantomData<T>);
-    derive_copy!(FromIterK<K: Copy, T, F: Copy>);
-    impl<K, T, F> FromIterK<K, T, F> {
-        pub fn new(k: K, f: F) -> Self {
-            FromIterK(k, f, PhantomData)
-        }
-    }
-    impl<K: Copy, T, F: Copy + Fn(K, T) -> I, I: Iterator + Clone> Arrow for FromIterK<K, T, F> {
-        type Input = T;
-        type Output = I::Item;
-        type Iter = I;
-        fn apply(&self, x: T) -> I {
-            self.1(self.0, x)
-        }
-    }
-
-    #[derive(Copy, Clone)]
-    pub struct Map<A, F>(A, F);
-    impl<A: Arrow, F: Copy + Fn(A::Output) -> R, R> Arrow for Map<A, F> {
-        type Input = A::Input;
-        type Output = R;
-        type Iter = iter::Map<A::Iter, F>;
-        fn apply(&self, x: Self::Input) -> Self::Iter {
-            self.0.apply(x).map(self.1)
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct ThenIter<A: Arrow, B: Arrow<Input = A::Output>> {
-        a_iter: A::Iter,
-        b_arrow: B,
-        b_iter: Option<B::Iter>,
-        // HACK(eddyb) this field is useless (never set to `Some`)
-        // (see `match self.b_iter_backwards` below for more details).
-        b_iter_backwards: Option<B::Iter>,
-    }
-    impl<A: Arrow, B: Arrow<Input = A::Output>> Iterator for ThenIter<A, B> {
-        type Item = B::Output;
-        fn next(&mut self) -> Option<Self::Item> {
-            loop {
-                if let Some(ref mut b_iter) = self.b_iter {
-                    if let x @ Some(_) = b_iter.next() {
-                        return x;
-                    }
-                }
-                match self.a_iter.next() {
-                    // HACK(eddyb) this never does anything, but without a *second*
-                    // call to `B::Iter::next`, LLVM spends more time optimizing.
-                    None => {
-                        return match self.b_iter_backwards {
-                            Some(ref mut b_iter) => b_iter.next(),
-                            None => None,
-                        }
-                    }
-                    Some(x) => self.b_iter = Some(self.b_arrow.apply(x)),
-                }
-            }
-        }
-    }
-
-    #[derive(Copy, Clone)]
-    pub struct Then<A, B>(A, B);
-    impl<A: Arrow, B: Arrow<Input = A::Output>> Arrow for Then<A, B> {
-        type Input = A::Input;
-        type Output = B::Output;
-        type Iter = ThenIter<A, B>;
-        fn apply(&self, x: Self::Input) -> Self::Iter {
-            ThenIter {
-                a_iter: self.0.apply(x),
-                b_arrow: self.1,
-                b_iter: None,
-                b_iter_backwards: None,
-            }
-        }
-    }
-
-    #[derive(Clone)]
-    pub struct PairsIter<A: Arrow, B: Arrow>
+    impl<'a, T, Forest, Node: Copy> Iterator for ShapedAllIter<'a, T, Forest, Node>
     where
-        A::Output: Copy,
-        B::Input: Copy,
+        T: Shaped + FromShapeFields<'a, Forest, Node>,
+        T::Shape: Shape<Forest, Node>,
     {
-        a_iter: A::Iter,
-        b_iter0: B::Iter,
-        a_output_b_iter: Option<(A::Output, B::Iter)>,
+        type Item = T::Output;
+
+        fn next(&mut self) -> Option<T::Output> {
+            let state = self.state.as_mut()?.as_mut();
+            let mut fields = T::Fields::default();
+            T::Shape::read(self.forest, self.node, state, fields.as_mut());
+            if !T::Shape::step(self.forest, self.node, state) {
+                self.state.take();
+            }
+            Some(T::from_shape_fields(self.forest, fields))
+        }
     }
-    impl<A: Arrow, B: Arrow> Iterator for PairsIter<A, B>
+
+    impl Shaped for () {
+        type Shape = shape!(_);
+        type State = [usize; <shape!(_)>::STATE_LEN];
+    }
+
+    impl<Forest, Node> FromShapeFields<'_, Forest, Node> for () {
+        type Output = ();
+        type Fields = [Option<Node>; 0];
+
+        fn from_shape_fields(_: &Forest, []: Self::Fields) {}
+    }
+
+    impl<'a, Forest, Node, T> FromShapeFields<'a, Forest, Node> for Option<T>
     where
-        A::Output: Copy,
-        B::Input: Copy,
+        T: FromShapeFields<'a, Forest, Node, Fields = [Option<Node>; 1]>,
     {
-        type Item = (A::Output, B::Output);
-        fn next(&mut self) -> Option<Self::Item> {
-            loop {
-                if let Some((x, ref mut b_iter)) = self.a_output_b_iter {
-                    if let Some(y) = b_iter.next() {
-                        return Some((x, y));
-                    }
-                }
-                match self.a_iter.next() {
-                    None => return None,
-                    Some(x) => {
-                        self.a_output_b_iter = Some((x, self.b_iter0.clone()));
-                    }
-                }
-            }
+        type Output = Option<T::Output>;
+        type Fields = [Option<Node>; 1];
+
+        fn from_shape_fields(forest: &'a Forest, [node]: Self::Fields) -> Option<T::Output> {
+            Some(T::from_shape_fields(forest, [Some(node?)]))
         }
     }
 
-    #[derive(Copy, Clone)]
-    pub struct Pairs<A, B>(A, B);
-    impl<A: Arrow, B: Arrow> Arrow for Pairs<A, B>
+    pub struct WithShape<T, Shape, State>(PhantomVoid<(T, Shape, State)>);
+
+    impl<T, Shape, State> Shaped for WithShape<T, Shape, State>
     where
-        A::Output: Copy,
-        B::Input: Copy,
+        Shape: ShapeStateLen,
+        State: Default + AsMut<[usize]>,
     {
-        type Input = (A::Input, B::Input);
-        type Output = (A::Output, B::Output);
-        type Iter = PairsIter<A, B>;
-        fn apply(&self, (x, y): Self::Input) -> Self::Iter {
-            PairsIter {
-                a_iter: self.0.apply(x),
-                b_iter0: self.1.apply(y),
-                a_output_b_iter: None,
+        type Shape = Shape;
+        type State = State;
+    }
+
+    impl<'a, Forest, Node, T, Shape, State> FromShapeFields<'a, Forest, Node>
+        for WithShape<T, Shape, State>
+    where
+        T: FromShapeFields<'a, Forest, Node>,
+    {
+        type Output = T::Output;
+        type Fields = T::Fields;
+
+        fn from_shape_fields(forest: &'a Forest, fields: T::Fields) -> T::Output {
+            T::from_shape_fields(forest, fields)
+        }
+    }
+
+    pub trait ShapeStateLen {
+        const STATE_LEN: usize;
+    }
+
+    pub trait Shape<Forest, Node>: ShapeStateLen {
+        fn init(forest: &Forest, node: Node, state: &mut [usize]);
+        fn read(forest: &Forest, node: Node, state: &[usize], fields: &mut [Option<Node>]);
+        fn step(forest: &Forest, node: Node, state: &mut [usize]) -> bool;
+    }
+
+    pub struct Leaf(PhantomVoid<()>);
+
+    impl ShapeStateLen for Leaf {
+        const STATE_LEN: usize = 0;
+    }
+
+    impl<Forest, Node> Shape<Forest, Node> for Leaf {
+        fn init(_: &Forest, _: Node, _: &mut [usize]) {}
+        fn read(_: &Forest, _: Node, _: &[usize], _: &mut [Option<Node>]) {}
+        fn step(_: &Forest, _: Node, _: &mut [usize]) -> bool {
+            false
+        }
+    }
+
+    // FIXME(eddyb) this should be using const generics.
+    pub struct Field<X>(PhantomVoid<X>);
+
+    impl<X> ShapeStateLen for Field<X> {
+        const STATE_LEN: usize = 0;
+    }
+
+    impl<X, Forest, Node> Shape<Forest, Node> for Field<X>
+    where
+        X: Default + AsRef<[()]>,
+    {
+        fn init(_: &Forest, _: Node, _: &mut [usize]) {}
+        fn read(_: &Forest, node: Node, _: &[usize], fields: &mut [Option<Node>]) {
+            fields[X::default().as_ref().len()] = Some(node);
+        }
+        fn step(_: &Forest, _: Node, _: &mut [usize]) -> bool {
+            false
+        }
+    }
+
+    pub struct Split<Left, Right>(PhantomVoid<(Left, Right)>);
+
+    impl<Left, Right> ShapeStateLen for Split<Left, Right>
+    where
+        Left: ShapeStateLen,
+        Right: ShapeStateLen,
+    {
+        const STATE_LEN: usize = 1 + Left::STATE_LEN + Right::STATE_LEN;
+    }
+
+    impl<'i, G: GrammarReflector, I: Input, Left, Right> Shape<ParseForest<'i, G, I>, Node<'i, G>>
+        for Split<Left, Right>
+    where
+        Left: Shape<ParseForest<'i, G, I>, Node<'i, G>>,
+        Right: Shape<ParseForest<'i, G, I>, Node<'i, G>>,
+    {
+        fn init(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) {
+            let (state_split, state) = state.split_at_mut(1);
+            let state_split = &mut state_split[0];
+            let (state_left, state_right) = state.split_at_mut(Left::STATE_LEN);
+
+            let &split = forest.possibilities[&node].iter().next().unwrap();
+
+            let (left, right) = forest.split_children(node, split);
+
+            *state_split = split;
+            Left::init(forest, left, state_left);
+            Right::init(forest, right, state_right);
+        }
+        fn read(
+            forest: &ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            state: &[usize],
+            fields: &mut [Option<Node<'i, G>>],
+        ) {
+            let (state_split, state) = state.split_at(1);
+            let state_split = state_split[0];
+            let (state_left, state_right) = state.split_at(Left::STATE_LEN);
+
+            let (left, right) = forest.split_children(node, state_split);
+            Left::read(forest, left, state_left, fields);
+            Right::read(forest, right, state_right, fields);
+        }
+        fn step(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) -> bool {
+            let (state_split, state) = state.split_at_mut(1);
+            let state_split = &mut state_split[0];
+            let (state_left, state_right) = state.split_at_mut(Left::STATE_LEN);
+
+            let (left, right) = forest.split_children(node, *state_split);
+
+            Right::step(forest, right, state_right)
+                || Left::step(forest, left, state_left) && {
+                    Right::init(forest, right, state_right);
+                    true
+                }
+                || ({
+                    use std::ops::Bound::*;
+                    forest.possibilities[&node]
+                        .range((Excluded(*state_split), Unbounded))
+                        .next()
+                        .cloned()
+                })
+                .map(|split| {
+                    *state_split = split;
+
+                    let (left, right) = forest.split_children(node, split);
+
+                    Left::init(forest, left, state_left);
+                    Right::init(forest, right, state_right);
+                })
+                .is_some()
+        }
+    }
+
+    pub struct Choice<At, Cases>(PhantomVoid<(At, Cases)>);
+
+    impl<At, Cases> ShapeStateLen for Choice<At, Cases>
+    where
+        At: ShapeStateLen,
+        Cases: ShapeStateLen,
+    {
+        const STATE_LEN: usize = At::STATE_LEN + Cases::STATE_LEN;
+    }
+
+    impl<'i, G: GrammarReflector, I: Input, At, Cases> Shape<ParseForest<'i, G, I>, Node<'i, G>>
+        for Choice<At, Cases>
+    where
+        At: Shape<ParseForest<'i, G, I>, Node<'i, G>>,
+        Cases: Shape<ParseForest<'i, G, I>, Node<'i, G>>,
+    {
+        fn init(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) {
+            let (state_at, state_cases) = state.split_at_mut(At::STATE_LEN);
+
+            let &choice = forest.possibilities[&node].iter().next().unwrap();
+
+            let child = forest.choice_child(node, choice);
+
+            state_cases[0] = choice;
+            At::init(forest, child, state_at);
+            Cases::init(forest, child, state_cases);
+        }
+        fn read(
+            forest: &ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            state: &[usize],
+            fields: &mut [Option<Node<'i, G>>],
+        ) {
+            let (state_at, state_cases) = state.split_at(At::STATE_LEN);
+
+            let child = forest.choice_child(node, state_cases[0]);
+
+            At::read(forest, child, state_at, fields);
+            Cases::read(forest, child, state_cases, fields);
+        }
+        fn step(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) -> bool {
+            let (state_at, state_cases) = state.split_at_mut(At::STATE_LEN);
+
+            let child = forest.choice_child(node, state_cases[0]);
+
+            At::step(forest, child, state_at)
+                || Cases::step(forest, child, state_cases) && {
+                    At::init(forest, child, state_at);
+                    true
+                }
+                || ({
+                    use std::ops::Bound::*;
+                    forest.possibilities[&node]
+                        .range((Excluded(state_cases[0]), Unbounded))
+                        .next()
+                        .cloned()
+                })
+                .map(|choice| {
+                    state_cases[0] = choice;
+
+                    let child = forest.choice_child(node, choice);
+
+                    At::init(forest, child, state_at);
+                    Cases::init(forest, child, state_cases);
+                })
+                .is_some()
+        }
+    }
+
+    pub trait CaseList {
+        const LEN: usize;
+    }
+
+    pub struct CaseAppend<Prefix, Last>(PhantomVoid<(Prefix, Last)>);
+
+    impl<Prefix: CaseList, Last> CaseList for CaseAppend<Prefix, Last> {
+        const LEN: usize = Prefix::LEN + 1;
+    }
+
+    impl<Prefix, Last> ShapeStateLen for CaseAppend<Prefix, Last>
+    where
+        Prefix: ShapeStateLen,
+        Last: ShapeStateLen,
+    {
+        const STATE_LEN: usize = {
+            // HACK(eddyb) this is just `max(1 + Last::STATE_LEN, Prefix::STATE_LEN)`.
+            let a = 1 + Last::STATE_LEN;
+            let b = Prefix::STATE_LEN;
+
+            let a_gt_b_mask = -((a > b) as isize) as usize;
+            (a_gt_b_mask & a) | (!a_gt_b_mask & b)
+        };
+    }
+
+    impl<Forest, Node, Prefix, Last> Shape<Forest, Node> for CaseAppend<Prefix, Last>
+    where
+        Prefix: Shape<Forest, Node> + CaseList,
+        Last: Shape<Forest, Node>,
+    {
+        fn init(forest: &Forest, node: Node, state: &mut [usize]) {
+            let (state_choice, state_last) = state.split_at_mut(1);
+            let state_choice = state_choice[0];
+
+            if state_choice != Prefix::LEN {
+                Prefix::init(forest, node, state);
+            } else {
+                Last::init(forest, node, state_last);
+            }
+        }
+        fn read(forest: &Forest, node: Node, state: &[usize], fields: &mut [Option<Node>]) {
+            let (state_choice, state_last) = state.split_at(1);
+            let state_choice = state_choice[0];
+
+            if state_choice != Prefix::LEN {
+                Prefix::read(forest, node, state, fields);
+            } else {
+                Last::read(forest, node, state_last, fields);
+            }
+        }
+        fn step(forest: &Forest, node: Node, state: &mut [usize]) -> bool {
+            let (state_choice, state_last) = state.split_at_mut(1);
+            let state_choice = state_choice[0];
+
+            if state_choice != Prefix::LEN {
+                Prefix::step(forest, node, state)
+            } else {
+                Last::step(forest, node, state_last)
             }
         }
     }
-}
 
-// HACK(eddyb) work around `macro_rules` not being `use`-able.
-pub use crate::__forest_traverse as traverse;
+    pub struct CaseEmpty(PhantomVoid<()>);
 
-#[macro_export]
-macro_rules! __forest_traverse {
-    (typeof($leaf:ty) _) => { $leaf };
-    (typeof($leaf:ty) ?) => { Option<traverse!(typeof($leaf) _)> };
-    (typeof($leaf:ty) ($l_shape:tt, $r_shape:tt)) => { (traverse!(typeof($leaf) $l_shape), traverse!(typeof($leaf) $r_shape)) };
-    (typeof($leaf:ty) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => { ($(traverse!(typeof($leaf) $shape),)*) };
-    (typeof($leaf:ty) [$shape:tt]) => { (traverse!(typeof($leaf) $shape),) };
+    impl CaseList for CaseEmpty {
+        const LEN: usize = 0;
+    }
 
-    (one($forest:ident, $node:ident) _) => {
-        $node
-    };
-    (one($forest:ident, $node:ident) ?) => {
-        Some($node)
-    };
-    (one($forest:ident, $node:ident) ($l_shape:tt, $r_shape:tt)) => {
-        {
-            let (left, right) = $forest.one_split($node)?;
-            (
-                traverse!(one($forest, left) $l_shape),
-                traverse!(one($forest, right) $r_shape),
-            )
+    impl ShapeStateLen for CaseEmpty {
+        const STATE_LEN: usize = 0;
+    }
+
+    impl<Forest, Node> Shape<Forest, Node> for CaseEmpty {
+        fn init(_: &Forest, _: Node, _: &mut [usize]) {
+            unreachable!()
         }
-    };
-    (one($forest:ident, $node:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
-        {
-            let node = $forest.one_choice($node)?;
-            let mut r = <($(traverse!(typeof(_) $shape),)*)>::default();
-            match node.kind {
-                $($kind => r.$i = traverse!(one($forest, node) $shape),)*
-                _ => unreachable!(),
-            }
-            r
+        fn read(_: &Forest, _: Node, _: &[usize], _: &mut [Option<Node>]) {
+            unreachable!()
         }
-    };
-    (one($forest:ident, $node:ident) [$shape:tt]) => {
-        {
-            let mut r = <(traverse!(typeof(_) $shape),)>::default();
-            if let Some(node) = $forest.unpack_opt($node) {
-                r.0 = traverse!(one($forest, node) $shape);
-            }
-            r
+        fn step(_: &Forest, _: Node, _: &mut [usize]) -> bool {
+            unreachable!()
         }
-    };
+    }
 
-    (all($forest:ident) _) => {
-        $crate::forest::nd::Id::new()
-    };
-    (all($forest:ident) ?) => {
-        $crate::forest::nd::Id::new().map(Some)
-    };
-    (all($forest:ident) ($l_shape:tt, $r_shape:tt)) => {
-        $crate::forest::nd::FromIterK::new($forest, $crate::forest::ParseForest::all_splits)
-            .then(traverse!(all($forest) $l_shape).pairs(traverse!(all($forest) $r_shape)))
-    };
-    (all($forest:ident) { $($i:tt $_i:ident: $kind:pat => $shape:tt,)* }) => {
-        $crate::forest::nd::FromIter::new(move |node| {
-            #[derive(Clone)]
-            enum Iter<$($_i),*> {
-                $($_i($_i)),*
+    pub struct Opt<A>(PhantomVoid<A>);
+
+    impl<A> ShapeStateLen for Opt<A>
+    where
+        A: ShapeStateLen,
+    {
+        const STATE_LEN: usize = A::STATE_LEN;
+    }
+
+    impl<'i, G: GrammarReflector, I: Input, A> Shape<ParseForest<'i, G, I>, Node<'i, G>> for Opt<A>
+    where
+        A: Shape<ParseForest<'i, G, I>, Node<'i, G>>,
+    {
+        fn init(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) {
+            if let Some(child) = forest.unpack_opt(node) {
+                A::init(forest, child, state);
             }
-            impl<$($_i: Iterator),*> Iterator for Iter<$($_i),*>
-                where $($_i::Item: Default),*
-            {
-                type Item = ($($_i::Item),*);
-                fn next(&mut self) -> Option<Self::Item> {
-                    let mut r = Self::Item::default();
-                    match self {
-                        $(Iter::$_i(iter) => r.$i = iter.next()?),*
-                    }
-                    Some(r)
-                }
+        }
+        fn read(
+            forest: &ParseForest<'i, G, I>,
+            node: Node<'i, G>,
+            state: &[usize],
+            fields: &mut [Option<Node<'i, G>>],
+        ) {
+            if let Some(child) = forest.unpack_opt(node) {
+                A::read(forest, child, state, fields);
             }
-            $forest.all_choices(node).flat_map(move |node| {
-                match node.kind {
-                    $($kind => Iter::$_i(traverse!(all($forest) $shape).apply(node)),)*
-                    _ => unreachable!(),
-                }
-            })
-        })
-    };
-    (all($forest:ident) [$shape:tt]) => {
-        $crate::forest::nd::FromIter::new(move |node| {
-            match $forest.unpack_opt(node) {
-                Some(node) => {
-                    Some(traverse!(all($forest) $shape).apply(node).map(|x| (x,)))
-                        .into_iter().flatten().chain(None)
-                }
-                None => {
-                    None.into_iter().flatten().chain(Some(<_>::default()))
-                }
+        }
+        fn step(forest: &ParseForest<'i, G, I>, node: Node<'i, G>, state: &mut [usize]) -> bool {
+            match forest.unpack_opt(node) {
+                Some(child) => A::step(forest, child, state),
+                None => false,
             }
-        })
+        }
+    }
+
+    // HACK(eddyb) work around `macro_rules` not being `use`-able.
+    pub use crate::__forest_typed_shape as shape;
+
+    #[macro_export]
+    macro_rules! __forest_typed_shape {
+        (_) => {
+            $crate::forest::typed::Leaf
+        };
+        ($i:literal) => {
+            $crate::forest::typed::Field<[(); $i]>
+        };
+        (($l_shape:tt $r_shape:tt)) => {
+            $crate::forest::typed::Split<
+                $crate::forest::typed::shape!($l_shape),
+                $crate::forest::typed::shape!($r_shape),
+            >
+        };
+        ({ $at_shape:tt @ $($shape:tt)* }) => {
+            $crate::forest::typed::Choice<
+                $crate::forest::typed::shape!($at_shape),
+                $crate::forest::typed::shape!(cases { $($shape)* } rev {}),
+            >
+        };
+        // HACK(eddyb) have to reverse the tt list to produce a "snoc-list"
+        // instead of "cons-list".
+        (cases { $shape0:tt $($shape:tt)* } rev { $($shape_rev:tt)* }) => {
+            $crate::forest::typed::shape!(cases { $($shape)* } rev { $shape0 $($shape_rev)* })
+        };
+        (cases {} rev { $shape_last:tt $($shape:tt)* }) => {
+            $crate::forest::typed::CaseAppend<
+                $crate::forest::typed::shape!(cases {} rev { $($shape)* }),
+                $crate::forest::typed::shape!($shape_last),
+            >
+        };
+        (cases {} rev {}) => { $crate::forest::typed::CaseEmpty };
+        ([$shape:tt]) => {
+            $crate::forest::typed::Opt<
+                $crate::forest::typed::shape!($shape),
+            >
+        }
     }
 }
