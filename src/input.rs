@@ -45,18 +45,9 @@ pub trait Input: Sized {
     // FIXME(eddyb) remove - replace with `SourceInfo` for the affected range
     type SourceInfoPoint: fmt::Debug;
     fn to_container(self) -> Self::Container;
-    fn slice<'a>(
-        input: &'a Self::Container,
-        range: std::ops::Range<usize>,
-    ) -> &'a Self::Slice;
-    fn source_info(
-        input: &Self::Container,
-        range: std::ops::Range<usize>,
-    ) -> Self::SourceInfo;
-    fn source_info_point(
-        input: &Self::Container,
-        index: usize,
-    ) -> Self::SourceInfoPoint;
+    fn slice<'a>(input: &'a Self::Container, range: std::ops::Range<usize>) -> &'a Self::Slice;
+    fn source_info(input: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo;
+    fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint;
 }
 
 impl<T> Input for &[T] {
@@ -67,20 +58,14 @@ impl<T> Input for &[T] {
     fn to_container(self) -> Self::Container {
         self
     }
-    fn slice<'b>(
-        input: &'b Self::Container,
-        range: std::ops::Range<usize>,
-    ) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: std::ops::Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
     fn source_info(_: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo {
         range
     }
-    fn source_info_point(
-        _: &Self::Container,
-        index: usize,
-    ) -> Self::SourceInfoPoint {
-       index 
+    fn source_info_point(_: &Self::Container, index: usize) -> Self::SourceInfoPoint {
+        index
     }
 }
 
@@ -92,16 +77,10 @@ impl<'a> Input for &'a str {
     fn to_container(self) -> Self::Container {
         self.into()
     }
-    fn slice<'b>(
-        input: &'b Self::Container,
-        range: std::ops::Range<usize>,
-    ) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: std::ops::Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
-    fn source_info(
-        input: &Self::Container,
-        range: std::ops::Range<usize>,
-    ) -> Self::SourceInfo {
+    fn source_info(input: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo {
         let start = Self::source_info_point(input, range.start);
         // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
         // Ideally we'd cache around a line map, like rustc's `SourceMap`.
@@ -112,10 +91,7 @@ impl<'a> Input for &'a str {
         }
         LineColumnRange { start, end }
     }
-    fn source_info_point<'i>(
-        input: &Self::Container,
-        index: usize,
-    ) -> Self::SourceInfoPoint {
+    fn source_info_point<'i>(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         LineColumn::count(&input[..index])
     }
 }
