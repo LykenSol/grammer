@@ -1,18 +1,17 @@
 use crate::forest::{GrammarReflector, Node, OwnedParseForestAndNode, ParseForest};
-use crate::high::ErasableL;
-use crate::input::{Input, InputMatch, Range};
-use indexing::{self, Index, Unknown};
+use crate::input::{Input, InputMatch};
 use std::collections::HashMap;
+use std::ops::Range;
 
-pub struct Parser<'a, 'i, G: GrammarReflector, I: Input, Pat> {
-    state: &'a mut ParserState<'i, G, I, Pat>,
-    result: Range<'i>,
-    remaining: Range<'i>,
+pub struct Parser<'a, G: GrammarReflector, I: Input, Pat> {
+    state: &'a mut ParserState<G, I, Pat>,
+    result: Range<usize>,
+    remaining: Range<usize>,
 }
 
-struct ParserState<'i, G: GrammarReflector, I: Input, Pat> {
-    forest: ParseForest<'i, G, I>,
-    last_input_pos: Index<'i, Unknown>,
+struct ParserState<G: GrammarReflector, I: Input, Pat> {
+    forest: ParseForest<G, I>,
+    last_input_pos: Index<Unknown>,
     expected_pats: Vec<Pat>,
 }
 
@@ -24,14 +23,14 @@ pub struct ParseError<A, Pat> {
 
 pub type ParseResult<A, Pat, T> = Result<T, ParseError<A, Pat>>;
 
-impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
+impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
     pub fn parse_with(
         grammar: G,
         input: I,
         f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<Node<'i2, G>>,
     ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, I>> {
         ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
-            let range = Range(input.range());
+            let range = input.range();
             let mut state = ParserState {
                 forest: ParseForest {
                     grammar,
@@ -44,7 +43,7 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
 
             let result = f(Parser {
                 state: &mut state,
-                result: Range(range.frontiers().0),
+                result: range[0],
                 remaining: range,
             });
 
@@ -73,17 +72,17 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
     }
 
     // FIXME(eddyb) find an nicer way for algorithms to manipulate these ranges.
-    pub fn result(&self) -> Range<'i> {
+    pub fn result(&self) -> Range<usize> {
         self.result
     }
 
-    pub fn remaining(&self) -> Range<'i> {
+    pub fn remaining(&self) -> Range<usize> {
         self.remaining
     }
 
     /// Get the current result range, and leave behind an empty range
     /// (at the end of the current result / start of the remaining input).
-    pub fn take_result(&mut self) -> Range<'i> {
+    pub fn take_result(&mut self) -> Range<usize> {
         let result = self.result;
         self.result = Range(result.frontiers().1);
         result
@@ -91,9 +90,9 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
 
     pub fn with_result_and_remaining<'a>(
         &'a mut self,
-        result: Range<'i>,
-        remaining: Range<'i>,
-    ) -> Parser<'a, 'i, G, I, Pat> {
+        result: Range<usize>,
+        remaining: Range<usize>,
+    ) -> Parser<'a, G, I, Pat> {
         // HACK(eddyb) enforce that `result` and `remaining` are inside `self`.
         assert_eq!(self.result, Range(self.remaining.frontiers().0));
         let full_new_range = result.join(remaining.0).unwrap();
@@ -110,7 +109,7 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
     pub fn input_consume_left<'a, SpecificPat: Into<Pat>>(
         &'a mut self,
         pat: SpecificPat,
-    ) -> Option<Parser<'a, 'i, G, I, Pat>>
+    ) -> Option<Parser<'a, G, I, Pat>>
     where
         I::Slice: InputMatch<SpecificPat>,
     {
@@ -144,7 +143,7 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
     pub fn input_consume_right<'a, SpecificPat>(
         &'a mut self,
         pat: SpecificPat,
-    ) -> Option<Parser<'a, 'i, G, I, Pat>>
+    ) -> Option<Parser<'a, G, I, Pat>>
     where
         I::Slice: InputMatch<SpecificPat>,
     {
@@ -176,7 +175,7 @@ impl<'i, G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, 'i, G, I, Pat> {
     }
 
     // FIXME(eddyb) safeguard this against misuse.
-    pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<'i, G>) {
+    pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<G>) {
         self.result = Range(left.range.join(self.result.0).unwrap());
         self.state
             .forest

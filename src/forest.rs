@@ -1,12 +1,11 @@
-use crate::high::{type_lambda, ExistsL, PairL};
-use crate::input::{Input, Range};
-use indexing::{self, Container};
+use crate::input::Input ;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::str;
+use std::ops::Range;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NodeShape<T> {
@@ -55,25 +54,25 @@ pub trait GrammarReflector {
     fn node_desc(&self, kind: Self::NodeKind) -> String;
 }
 
-pub struct Node<'i, G: GrammarReflector> {
+pub struct Node<G: GrammarReflector> {
     pub kind: G::NodeKind,
-    pub range: Range<'i>,
+    pub range: std::ops::Range<usize>,
 }
 
 // FIXME(eddyb) can't derive these on `Node<G>` because that puts bounds on `G`.
-impl<G: GrammarReflector> Copy for Node<'_, G> {}
-impl<G: GrammarReflector> Clone for Node<'_, G> {
+impl<G: GrammarReflector> Copy for Node<G> {}
+impl<G: GrammarReflector> Clone for Node<G> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<G: GrammarReflector> PartialEq for Node<'_, G> {
+impl<G: GrammarReflector> PartialEq for Node<G> {
     fn eq(&self, other: &Self) -> bool {
         (self.kind, self.range) == (other.kind, other.range)
     }
 }
-impl<G: GrammarReflector> Eq for Node<'_, G> {}
-impl<G: GrammarReflector> PartialOrd for Node<'_, G>
+impl<G: GrammarReflector> Eq for Node<G> {}
+impl<G: GrammarReflector> PartialOrd for Node<G>
 where
     G::NodeKind: PartialOrd,
 {
@@ -81,7 +80,7 @@ where
         (self.kind, self.range).partial_cmp(&(other.kind, other.range))
     }
 }
-impl<G: GrammarReflector> Ord for Node<'_, G>
+impl<G: GrammarReflector> Ord for Node<G>
 where
     G::NodeKind: Ord,
 {
@@ -89,13 +88,13 @@ where
         (self.kind, self.range).cmp(&(other.kind, other.range))
     }
 }
-impl<G: GrammarReflector> Hash for Node<'_, G> {
+impl<G: GrammarReflector> Hash for Node<G> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         (self.kind, self.range).hash(state);
     }
 }
 
-impl<G: GrammarReflector> fmt::Debug for Node<'_, G> {
+impl<G: GrammarReflector> fmt::Debug for Node<G> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -108,34 +107,27 @@ impl<G: GrammarReflector> fmt::Debug for Node<'_, G> {
 }
 
 /// A parse forest, in SPPF (Shared Packed Parse Forest) representation.
-pub struct ParseForest<'i, G: GrammarReflector, I: Input> {
+pub struct ParseForest<G: GrammarReflector, I: Input> {
     pub grammar: G,
     // HACK(eddyb) `pub(crate)` only for `parser`.
-    pub(crate) input: Container<'i, I::Container>,
-    pub(crate) possibilities: HashMap<Node<'i, G>, BTreeSet<usize>>,
+    pub(crate) input: I::Container,
+    pub(crate) possibilities: HashMap<Node<G>, BTreeSet<usize>>,
 }
-
-type_lambda! {
-    pub type<'i> ParseForestL<G: GrammarReflector, I: Input> = ParseForest<'i, G, I>;
-    pub type<'i> NodeL<G: GrammarReflector> = Node<'i, G>;
-}
-
-pub type OwnedParseForestAndNode<G, I> = ExistsL<PairL<ParseForestL<G, I>, NodeL<G>>>;
 
 #[derive(Debug)]
 pub struct MoreThanOne;
 
-impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
-    pub fn input(&self, range: Range<'i>) -> &I::Slice {
+impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
+    pub fn input(&self, range: Range<usize>) -> &I::Slice {
         I::slice(&self.input, range)
     }
 
-    pub fn source_info(&self, range: Range<'i>) -> I::SourceInfo {
+    pub fn source_info(&self, range: Range<usize>) -> I::SourceInfo {
         I::source_info(&self.input, range)
     }
 
     // NOTE(eddyb) this is a private helper and should never be exported.
-    fn choice_child(&self, node: Node<'i, G>, choice: usize) -> Node<'i, G> {
+    fn choice_child(&self, node: Node<G>, choice: usize) -> Node<G> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Choice(_) => Node {
                 kind: self.grammar.node_shape_choice_get(node.kind, choice),
@@ -148,7 +140,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
         }
     }
 
-    pub fn one_choice(&self, node: Node<'i, G>) -> Result<Node<'i, G>, MoreThanOne> {
+    pub fn one_choice(&self, node: Node<G>) -> Result<Node<G>, MoreThanOne> {
         let choices = &self.possibilities[&node];
         if choices.len() > 1 {
             return Err(MoreThanOne);
@@ -159,8 +151,8 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
 
     pub fn all_choices<'a>(
         &'a self,
-        node: Node<'i, G>,
-    ) -> impl Iterator<Item = Node<'i, G>> + Clone + 'a
+        node: Node<G>,
+    ) -> impl Iterator<Item = Node<G>> + Clone + 'a
     where
         G::NodeKind: 'a,
     {
@@ -171,7 +163,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
     }
 
     // NOTE(eddyb) this is a private helper and should never be exported.
-    fn split_children(&self, node: Node<'i, G>, split: usize) -> (Node<'i, G>, Node<'i, G>) {
+    fn split_children(&self, node: Node<G>, split: usize) -> (Node<G>, Node<G>) {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => {
                 let (left, right, _) = node.range.split_at(split);
@@ -193,7 +185,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
         }
     }
 
-    pub fn one_split(&self, node: Node<'i, G>) -> Result<(Node<'i, G>, Node<'i, G>), MoreThanOne> {
+    pub fn one_split(&self, node: Node<G>) -> Result<(Node<G>, Node<G>), MoreThanOne> {
         let splits = &self.possibilities[&node];
         if splits.len() > 1 {
             return Err(MoreThanOne);
@@ -204,8 +196,8 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
 
     pub fn all_splits<'a>(
         &'a self,
-        node: Node<'i, G>,
-    ) -> impl Iterator<Item = (Node<'i, G>, Node<'i, G>)> + Clone + 'a
+        node: Node<G>,
+    ) -> impl Iterator<Item = (Node<G>, Node<G>)> + Clone + 'a
     where
         G::NodeKind: 'a,
     {
@@ -215,7 +207,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
             .map(move |split| self.split_children(node, split))
     }
 
-    pub fn unpack_alias(&self, node: Node<'i, G>) -> Node<'i, G> {
+    pub fn unpack_alias(&self, node: Node<G>) -> Node<G> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Alias(inner) => Node {
                 kind: inner,
@@ -225,7 +217,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
         }
     }
 
-    pub fn unpack_opt(&self, node: Node<'i, G>) -> Option<Node<'i, G>> {
+    pub fn unpack_opt(&self, node: Node<G>) -> Option<Node<G>> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Opt(inner) => {
                 if node.range.is_empty() {
@@ -256,7 +248,7 @@ impl<'i, G: GrammarReflector, I: Input> ParseForest<'i, G, I> {
         while let Some(source) = queue.pop_front() {
             let source_name = node_name(source);
             writeln!(out, "    {:?} [shape=box]", source_name)?;
-            let mut add_children = |children: &[(&str, Node<'i, G>)]| -> io::Result<()> {
+            let mut add_children = |children: &[(&str, Node<G>)]| -> io::Result<()> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, "    {:?} -> p{}:n", source_name, p)?;
                 for &(port, child) in children {
@@ -322,20 +314,20 @@ pub mod typed {
         type State: Default + AsMut<[usize]>;
     }
 
-    pub trait FromShapeFields<'a, 'i, G: GrammarReflector, I: Input>: Sized {
+    pub trait FromShapeFields<'a, G: GrammarReflector, I: Input>: Sized {
         type Output;
 
         // FIXME(eddyb) use an array length const here instead when that works.
-        type Fields: Default + AsMut<[Option<Node<'i, G>>]>;
+        type Fields: Default + AsMut<[Option<Node<G>>]>;
 
         fn from_shape_fields(
-            forest: &'a ParseForest<'i, G, I>,
+            forest: &'a ParseForest<G, I>,
             fields: Self::Fields,
         ) -> Self::Output;
 
         fn one(
-            forest: &'a ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+            forest: &'a ParseForest<G, I>,
+            node: Node<G>,
         ) -> Result<Self::Output, MoreThanOne>
         where
             Self: Shaped,
@@ -357,9 +349,9 @@ pub mod typed {
         }
 
         fn all(
-            forest: &'a ParseForest<'i, G, I>,
-            node: Node<'i, G>,
-        ) -> ShapedAllIter<'a, 'i, G, I, Self>
+            forest: &'a ParseForest<G, I>,
+            node: Node<G>,
+        ) -> ShapedAllIter<'a, G, I, Self>
         where
             Self: Shaped,
         {
@@ -376,15 +368,15 @@ pub mod typed {
         }
     }
 
-    pub struct ShapedAllIter<'a, 'i, G: GrammarReflector, I: Input, T: Shaped> {
-        forest: &'a ParseForest<'i, G, I>,
-        node: Node<'i, G>,
+    pub struct ShapedAllIter<'a, G: GrammarReflector, I: Input, T: Shaped> {
+        forest: &'a ParseForest<G, I>,
+        node: Node<G>,
         state: Option<T::State>,
     }
 
-    impl<'a, 'i, G: GrammarReflector, I: Input, T: Shaped> Iterator for ShapedAllIter<'a, 'i, G, I, T>
+    impl<'a, G: GrammarReflector, I: Input, T: Shaped> Iterator for ShapedAllIter<'a, G, I, T>
     where
-        T: FromShapeFields<'a, 'i, G, I>,
+        T: FromShapeFields<'a, G, I>,
     {
         type Item = T::Output;
 
@@ -404,22 +396,22 @@ pub mod typed {
         type State = [usize; <shape!(_)>::STATE_LEN];
     }
 
-    impl<'i, G: GrammarReflector, I: Input> FromShapeFields<'_, 'i, G, I> for () {
+    impl<G: GrammarReflector, I: Input> FromShapeFields<'_, G, I> for () {
         type Output = ();
-        type Fields = [Option<Node<'i, G>>; 0];
+        type Fields = [Option<Node<G>>; 0];
 
-        fn from_shape_fields(_: &ParseForest<'i, G, I>, []: Self::Fields) {}
+        fn from_shape_fields(_: &ParseForest<G, I>, []: Self::Fields) {}
     }
 
-    impl<'a, 'i, G: GrammarReflector, I: Input, T> FromShapeFields<'a, 'i, G, I> for Option<T>
+    impl<'a, G: GrammarReflector, I: Input, T> FromShapeFields<'a, G, I> for Option<T>
     where
-        T: FromShapeFields<'a, 'i, G, I, Fields = [Option<Node<'i, G>>; 1]>,
+        T: FromShapeFields<'a, G, I, Fields = [Option<Node<G>>; 1]>,
     {
         type Output = Option<T::Output>;
-        type Fields = [Option<Node<'i, G>>; 1];
+        type Fields = [Option<Node<G>>; 1];
 
         fn from_shape_fields(
-            forest: &'a ParseForest<'i, G, I>,
+            forest: &'a ParseForest<G, I>,
             [node]: Self::Fields,
         ) -> Option<T::Output> {
             Some(T::from_shape_fields(forest, [Some(node?)]))
@@ -433,17 +425,17 @@ pub mod typed {
         type State = S;
     }
 
-    impl<'a, 'i, G: GrammarReflector, I: Input, T, A, S> FromShapeFields<'a, 'i, G, I>
+    impl<'a, G: GrammarReflector, I: Input, T, A, S> FromShapeFields<'a, G, I>
         for WithShape<T, A, S>
     where
-        T: FromShapeFields<'a, 'i, G, I>,
+        T: FromShapeFields<'a, G, I>,
         A: Shape,
         S: Default + AsMut<[usize]>,
     {
         type Output = T::Output;
         type Fields = T::Fields;
 
-        fn from_shape_fields(forest: &'a ParseForest<'i, G, I>, fields: T::Fields) -> T::Output {
+        fn from_shape_fields(forest: &'a ParseForest<G, I>, fields: T::Fields) -> T::Output {
             T::from_shape_fields(forest, fields)
         }
     }
@@ -451,20 +443,20 @@ pub mod typed {
     pub trait Shape {
         const STATE_LEN: usize;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         );
-        fn read<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         );
-        fn step<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) -> bool;
     }
@@ -474,22 +466,22 @@ pub mod typed {
     impl Shape for Leaf {
         const STATE_LEN: usize = 0;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) {
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &[usize],
-            _: &mut [Option<Node<'i, G>>],
+            _: &mut [Option<Node<G>>],
         ) {
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) -> bool {
             false
@@ -502,23 +494,23 @@ pub mod typed {
     impl<X: Default + AsRef<[()]>> Shape for Field<X> {
         const STATE_LEN: usize = 0;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) {
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            node: Node<G>,
             _: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         ) {
             fields[X::default().as_ref().len()] = Some(node);
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) -> bool {
             false
@@ -530,9 +522,9 @@ pub mod typed {
     impl<Left: Shape, Right: Shape> Shape for Split<Left, Right> {
         const STATE_LEN: usize = 1 + Left::STATE_LEN + Right::STATE_LEN;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) {
             let (state_split, state) = state.split_at_mut(1);
@@ -547,11 +539,11 @@ pub mod typed {
             Left::init(forest, left, state_left);
             Right::init(forest, right, state_right);
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         ) {
             let (state_split, state) = state.split_at(1);
             let state_split = state_split[0];
@@ -561,9 +553,9 @@ pub mod typed {
             Left::read(forest, left, state_left, fields);
             Right::read(forest, right, state_right, fields);
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) -> bool {
             let (state_split, state) = state.split_at_mut(1);
@@ -601,9 +593,9 @@ pub mod typed {
     impl<At: Shape, Cases: Shape> Shape for Choice<At, Cases> {
         const STATE_LEN: usize = At::STATE_LEN + Cases::STATE_LEN;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) {
             let (state_at, state_cases) = state.split_at_mut(At::STATE_LEN);
@@ -616,11 +608,11 @@ pub mod typed {
             At::init(forest, child, state_at);
             Cases::init(forest, child, state_cases);
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         ) {
             let (state_at, state_cases) = state.split_at(At::STATE_LEN);
 
@@ -629,9 +621,9 @@ pub mod typed {
             At::read(forest, child, state_at, fields);
             Cases::read(forest, child, state_cases, fields);
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) -> bool {
             let (state_at, state_cases) = state.split_at_mut(At::STATE_LEN);
@@ -682,9 +674,9 @@ pub mod typed {
             (a_gt_b_mask & a) | (!a_gt_b_mask & b)
         };
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) {
             let (state_choice, state_last) = state.split_at_mut(1);
@@ -696,11 +688,11 @@ pub mod typed {
                 Last::init(forest, node, state_last);
             }
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         ) {
             let (state_choice, state_last) = state.split_at(1);
             let state_choice = state_choice[0];
@@ -711,9 +703,9 @@ pub mod typed {
                 Last::read(forest, node, state_last, fields);
             }
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) -> bool {
             let (state_choice, state_last) = state.split_at_mut(1);
@@ -736,24 +728,24 @@ pub mod typed {
     impl Shape for CaseEmpty {
         const STATE_LEN: usize = 0;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) {
             unreachable!()
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &[usize],
-            _: &mut [Option<Node<'i, G>>],
+            _: &mut [Option<Node<G>>],
         ) {
             unreachable!()
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            _: &ParseForest<'i, G, I>,
-            _: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            _: &ParseForest<G, I>,
+            _: Node<G>,
             _: &mut [usize],
         ) -> bool {
             unreachable!()
@@ -765,28 +757,28 @@ pub mod typed {
     impl<A: Shape> Shape for Opt<A> {
         const STATE_LEN: usize = A::STATE_LEN;
 
-        fn init<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn init<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) {
             if let Some(child) = forest.unpack_opt(node) {
                 A::init(forest, child, state);
             }
         }
-        fn read<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn read<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &[usize],
-            fields: &mut [Option<Node<'i, G>>],
+            fields: &mut [Option<Node<G>>],
         ) {
             if let Some(child) = forest.unpack_opt(node) {
                 A::read(forest, child, state, fields);
             }
         }
-        fn step<'i, G: GrammarReflector, I: Input>(
-            forest: &ParseForest<'i, G, I>,
-            node: Node<'i, G>,
+        fn step<G: GrammarReflector, I: Input>(
+            forest: &ParseForest<G, I>,
+            node: Node<G>,
             state: &mut [usize],
         ) -> bool {
             match forest.unpack_opt(node) {

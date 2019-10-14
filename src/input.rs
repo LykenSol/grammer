@@ -1,43 +1,7 @@
-use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ops::{self, Deref, RangeInclusive};
 use std::str;
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Range<'i>(pub indexing::Range<'i>);
-
-impl<'i> Deref for Range<'i> {
-    type Target = indexing::Range<'i>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl PartialOrd for Range<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.start(), self.end()).partial_cmp(&(other.start(), other.end()))
-    }
-}
-
-impl Ord for Range<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.start(), self.end()).cmp(&(other.start(), other.end()))
-    }
-}
-
-impl Hash for Range<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.start(), self.end()).hash(state);
-    }
-}
-
-impl Range<'_> {
-    pub fn subtract_suffix(self, other: Self) -> Self {
-        assert_eq!(self.end(), other.end());
-        Range(self.split_at(other.start() - self.start()).0)
-    }
-}
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LineColumn {
@@ -138,7 +102,7 @@ impl<'a> Input for &'a str {
         input: &Self::Container,
         range: std::ops::Range<usize>,
     ) -> Self::SourceInfo {
-        let start = Self::source_info_point(input, range.first());
+        let start = Self::source_info_point(input, range.start);
         // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
         // Ideally we'd cache around a line map, like rustc's `SourceMap`.
         let mut end = LineColumn::count(Self::slice(input, range));
@@ -152,8 +116,7 @@ impl<'a> Input for &'a str {
         input: &Self::Container,
         index: usize,
     ) -> Self::SourceInfoPoint {
-        let prefix_range = Range(input.split_at(index));
-        LineColumn::count(Self::slice(input, prefix_range))
+        LineColumn::count(&input[..index])
     }
 }
 
