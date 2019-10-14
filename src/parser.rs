@@ -1,4 +1,4 @@
-use crate::forest::{GrammarReflector, Node, OwnedParseForestAndNode, ParseForest};
+use crate::forest::{GrammarReflector, Node, ParseForest};
 use crate::input::{Input, InputMatch};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -11,7 +11,7 @@ pub struct Parser<'a, G: GrammarReflector, I: Input, Pat> {
 
 struct ParserState<G: GrammarReflector, I: Input, Pat> {
     forest: ParseForest<G, I>,
-    last_input_pos: Index<Unknown>,
+    last_input_pos: usize,
     expected_pats: Vec<Pat>,
 }
 
@@ -27,48 +27,43 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
     pub fn parse_with(
         grammar: G,
         input: I,
-        f: impl for<'i2> FnOnce(Parser<'_, 'i2, G, I, Pat>) -> Option<Node<'i2, G>>,
-    ) -> ParseResult<I::SourceInfoPoint, Pat, OwnedParseForestAndNode<G, I>> {
-        ErasableL::indexing_scope(input.to_container(), |lifetime, input| {
-            let range = input.range();
-            let mut state = ParserState {
-                forest: ParseForest {
-                    grammar,
-                    input,
-                    possibilities: HashMap::new(),
-                },
-                last_input_pos: range.first(),
-                expected_pats: vec![],
-            };
+        f: impl for<'i2> FnOnce(Parser<'_, G, I, Pat>) -> Option<Node<G>>,
+    ) -> ParseResult<I::SourceInfoPoint, Pat, (ParseForest<G, I>, Node<G>)> {
+        let range = input.range();
+        let mut state = ParserState {
+            forest: ParseForest {
+                grammar,
+                input: input.to_container(),
+                possibilities: HashMap::new(),
+            },
+            last_input_pos: range.first(),
+            expected_pats: vec![],
+        };
 
-            let result = f(Parser {
-                state: &mut state,
-                result: range[0],
-                remaining: range,
-            });
+        let result = f(Parser {
+            state: &mut state,
+            result: 0..input.len(),
+            remaining: range,
+        });
 
-            let mut error = ParseError {
-                at: I::source_info_point(&state.forest.input, state.last_input_pos),
-                expected: state.expected_pats,
-            };
-            error.expected.sort();
-            error.expected.dedup();
+        let mut error = ParseError {
+            at: I::source_info_point(&state.forest.input, state.last_input_pos),
+            expected: state.expected_pats,
+        };
+        error.expected.sort();
+        error.expected.dedup();
 
-            match result {
-                None => Err(error),
-                Some(node) => {
-                    // The result is only a successful parse if it's as long as the input.
-                    if node.range == range {
-                        Ok(OwnedParseForestAndNode::pack(
-                            lifetime,
-                            (state.forest, node),
-                        ))
-                    } else {
-                        Err(error)
-                    }
+        match result {
+            None => Err(error),
+            Some(node) => {
+                // The result is only a successful parse if it's as long as the input.
+                if node.range == range {
+                    Ok((state.forest, node))
+                } else {
+                    Err(error)
                 }
             }
-        })
+        }
     }
 
     // FIXME(eddyb) find an nicer way for algorithms to manipulate these ranges.
