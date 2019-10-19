@@ -418,21 +418,39 @@ impl IRule {
             Rule::Concat([left, right]) => NodeShape::Split(left, right),
             Rule::Or(ref cases) => NodeShape::Choice(cases.len()),
             Rule::Opt(rule) => NodeShape::Opt(rule),
-            Rule::RepeatMany(elem, sep) => NodeShape::Opt(cx.intern(Rule::RepeatMore(elem, sep))),
-            Rule::RepeatMore(rule, None) => {
-                NodeShape::Split(rule, cx.intern(Rule::RepeatMany(rule, None)))
+            Rule::RepeatMany(..) | Rule::RepeatMore(..) => {
+                NodeShape::Alias(self.expand_repeats(cx))
             }
-            Rule::RepeatMore(elem, Some((sep, SepKind::Simple))) => NodeShape::Split(
+        }
+    }
+
+    pub fn expand_repeats<Pat: Eq + Hash>(self, cx: &Context<Pat>) -> Self {
+        match cx[self] {
+            Rule::Empty
+            | Rule::Eat(_)
+            | Rule::Call(_)
+            | Rule::Concat(_)
+            | Rule::Or(_)
+            | Rule::Opt(_) => self,
+
+            Rule::RepeatMany(elem, sep) => {
+                cx.intern(Rule::Opt(cx.intern(Rule::RepeatMore(elem, sep))))
+            }
+            Rule::RepeatMore(elem, sep) => cx.intern(Rule::Concat([
                 elem,
-                cx.intern(Rule::Opt(cx.intern(Rule::Concat([sep, self])))),
-            ),
-            Rule::RepeatMore(elem, Some((sep, SepKind::Trailing))) => NodeShape::Split(
-                elem,
-                cx.intern(Rule::Opt(cx.intern(Rule::Concat([
-                    sep,
-                    cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing)))),
-                ])))),
-            ),
+                match sep {
+                    None => cx.intern(Rule::RepeatMany(elem, None)),
+                    Some((sep, kind)) => cx.intern(Rule::Opt(cx.intern(Rule::Concat([
+                        sep,
+                        match kind {
+                            SepKind::Simple => self,
+                            SepKind::Trailing => {
+                                cx.intern(Rule::RepeatMany(elem, Some((sep, SepKind::Trailing))))
+                            }
+                        },
+                    ])))),
+                },
+            ])),
         }
     }
 
