@@ -1,6 +1,7 @@
 use crate::rule::{call, eat, MatchesEmpty, MaybeKnown};
 use crate::scannerless::Pat as SPat;
-use flat_token::{flatten, FlatToken};
+use flat_token::flatten;
+pub use flat_token::FlatToken;
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
@@ -64,7 +65,7 @@ impl FromStr for Pat {
 
         let mut tokens = vec![];
         flatten(s.parse()?, &mut tokens);
-        Ok(Pat(tokens.iter().map(extract_pat).collect()))
+        Ok(Pat(tokens.iter().map(FlatTokenPat::extract_pat).collect()))
     }
 }
 
@@ -162,38 +163,43 @@ impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<
     }
 }
 
-pub fn extract_pat(this: &FlatToken) -> FlatTokenPat<String> {
-    match this {
-        &FlatToken::Delim(delim, _) => FlatTokenPat::Delim(delim),
-        FlatToken::Ident(tt) => FlatTokenPat::Ident(Some(tt.to_string())),
-        FlatToken::Punct(tt) => FlatTokenPat::Punct {
-            ch: Some(tt.as_char()),
-            joint: if tt.spacing() == Spacing::Joint {
-                Some(true)
-            } else {
-                None
+impl<S: AsRef<str>> FlatTokenPat<S> {
+    pub fn extract_pat(ft: &FlatToken) -> FlatTokenPat<S>
+    where
+        S: From<String>,
+    {
+        match ft {
+            &FlatToken::Delim(delim, _) => FlatTokenPat::Delim(delim),
+            FlatToken::Ident(tt) => FlatTokenPat::Ident(Some(tt.to_string().into())),
+            FlatToken::Punct(tt) => FlatTokenPat::Punct {
+                ch: Some(tt.as_char()),
+                joint: if tt.spacing() == Spacing::Joint {
+                    Some(true)
+                } else {
+                    None
+                },
             },
-        },
-        FlatToken::Literal(tt) => {
-            unimplemented!(
-                "matching specific literals is not supported, \
-                    use `LITERAL` instead of `{}`",
-                tt.to_string(),
-            );
+            FlatToken::Literal(tt) => {
+                unimplemented!(
+                    "matching specific literals is not supported, \
+                     use `LITERAL` instead of `{}`",
+                    tt.to_string(),
+                );
+            }
         }
     }
-}
 
-pub fn matches_pat(this: &FlatToken, pat: &FlatTokenPat<impl AsRef<str>>) -> bool {
-    match (this, pat) {
-        (FlatToken::Delim(a, _), FlatTokenPat::Delim(b)) => a == b,
-        (FlatToken::Ident(_), FlatTokenPat::Ident(None)) => true,
-        (FlatToken::Ident(a), FlatTokenPat::Ident(Some(b))) => a == b.as_ref(),
-        (FlatToken::Punct(a), FlatTokenPat::Punct { ch, joint }) => {
-            ch.map_or(true, |b| a.as_char() == b)
-                && joint.map_or(true, |b| (a.spacing() == Spacing::Joint) == b)
+    pub fn matches_pat(&self, ft: &FlatToken) -> bool {
+        match (ft, self) {
+            (FlatToken::Delim(a, _), FlatTokenPat::Delim(b)) => a == b,
+            (FlatToken::Ident(_), FlatTokenPat::Ident(None)) => true,
+            (FlatToken::Ident(a), FlatTokenPat::Ident(Some(b))) => a == b.as_ref(),
+            (FlatToken::Punct(a), FlatTokenPat::Punct { ch, joint }) => {
+                ch.map_or(true, |b| a.as_char() == b)
+                    && joint.map_or(true, |b| (a.spacing() == Spacing::Joint) == b)
+            }
+            (FlatToken::Literal(_), FlatTokenPat::Literal) => true,
+            _ => false,
         }
-        (FlatToken::Literal(_), FlatTokenPat::Literal) => true,
-        _ => false,
     }
 }
