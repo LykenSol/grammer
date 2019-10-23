@@ -65,7 +65,7 @@ impl FromStr for Pat {
 
         let mut tokens = vec![];
         flatten(s.parse()?, &mut tokens);
-        Ok(Pat(tokens.iter().map(FlatTokenPat::extract_pat).collect()))
+        Ok(Pat(tokens.iter().map(FlatTokenPat::extract).collect()))
     }
 }
 
@@ -164,7 +164,7 @@ impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<
 }
 
 impl<S: AsRef<str>> FlatTokenPat<S> {
-    pub fn extract_pat(ft: &FlatToken) -> FlatTokenPat<S>
+    pub fn extract(ft: &FlatToken) -> FlatTokenPat<S>
     where
         S: From<String>,
     {
@@ -189,7 +189,7 @@ impl<S: AsRef<str>> FlatTokenPat<S> {
         }
     }
 
-    pub fn matches_pat(&self, ft: &FlatToken) -> bool {
+    pub fn matches(&self, ft: &FlatToken) -> bool {
         match (ft, self) {
             (FlatToken::Delim(a, _), FlatTokenPat::Delim(b)) => a == b,
             (FlatToken::Ident(_), FlatTokenPat::Ident(None)) => true,

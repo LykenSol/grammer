@@ -58,7 +58,7 @@ impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
         if self
             .iter()
             .zip(pat)
-            .take_while(|(t, p)| p.matches_pat(t))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {
@@ -72,7 +72,7 @@ impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
             .iter()
             .zip(pat)
             .rev()
-            .take_while(|(t, p)| p.matches_pat(t))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {
