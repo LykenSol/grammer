@@ -1,5 +1,7 @@
 use crate::rule::{call, eat, MatchesEmpty, MaybeKnown};
 use crate::scannerless::Pat as SPat;
+use flat_token::flatten;
+pub use flat_token::FlatToken;
 pub use proc_macro2::{
     Delimiter, Ident, LexError, Literal, Punct, Spacing, Span, TokenStream, TokenTree,
 };
@@ -63,7 +65,7 @@ impl FromStr for Pat {
 
         let mut tokens = vec![];
         flatten(s.parse()?, &mut tokens);
-        Ok(Pat(tokens.into_iter().map(|tt| tt.extract_pat()).collect()))
+        Ok(Pat(tokens.iter().map(FlatTokenPat::extract).collect()))
     }
 }
 
@@ -99,13 +101,6 @@ impl MatchesEmpty for Pat {
     fn matches_empty(&self) -> MaybeKnown<bool> {
         MaybeKnown::Known(self.0.is_empty())
     }
-}
-
-pub enum FlatToken {
-    Delim(char, Span),
-    Ident(Ident),
-    Punct(Punct),
-    Literal(Literal),
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -168,20 +163,14 @@ impl<S: AsRef<str>, Pats: Deref<Target = [FlatTokenPat<S>]>> fmt::Debug for Pat<
     }
 }
 
-impl FlatToken {
-    pub fn span(&self) -> Span {
-        match self {
-            &FlatToken::Delim(_, span) => span,
-            FlatToken::Ident(tt) => tt.span(),
-            FlatToken::Punct(tt) => tt.span(),
-            FlatToken::Literal(tt) => tt.span(),
-        }
-    }
-
-    pub fn extract_pat(&self) -> FlatTokenPat<String> {
-        match self {
+impl<S: AsRef<str>> FlatTokenPat<S> {
+    pub fn extract(ft: &FlatToken) -> FlatTokenPat<S>
+    where
+        S: From<String>,
+    {
+        match ft {
             &FlatToken::Delim(delim, _) => FlatTokenPat::Delim(delim),
-            FlatToken::Ident(tt) => FlatTokenPat::Ident(Some(tt.to_string())),
+            FlatToken::Ident(tt) => FlatTokenPat::Ident(Some(tt.to_string().into())),
             FlatToken::Punct(tt) => FlatTokenPat::Punct {
                 ch: Some(tt.as_char()),
                 joint: if tt.spacing() == Spacing::Joint {
@@ -200,8 +189,8 @@ impl FlatToken {
         }
     }
 
-    pub fn matches_pat(&self, pat: &FlatTokenPat<impl AsRef<str>>) -> bool {
-        match (self, pat) {
+    pub fn matches(&self, ft: &FlatToken) -> bool {
+        match (ft, self) {
             (FlatToken::Delim(a, _), FlatTokenPat::Delim(b)) => a == b,
             (FlatToken::Ident(_), FlatTokenPat::Ident(None)) => true,
             (FlatToken::Ident(a), FlatTokenPat::Ident(Some(b))) => a == b.as_ref(),
@@ -212,37 +201,5 @@ impl FlatToken {
             (FlatToken::Literal(_), FlatTokenPat::Literal) => true,
             _ => false,
         }
-    }
-}
-
-pub(crate) fn flatten(stream: TokenStream, out: &mut Vec<FlatToken>) {
-    for tt in stream {
-        let flat = match tt {
-            TokenTree::Group(tt) => {
-                let delim = tt.delimiter();
-                // FIXME(eddyb) use proper delim span here.
-                let span = tt.span();
-                let stream = tt.stream();
-                let (open, close) = match delim {
-                    Delimiter::Parenthesis => ('(', ')'),
-                    Delimiter::Brace => ('{', '}'),
-                    Delimiter::Bracket => ('[', ']'),
-                    Delimiter::None => {
-                        // FIXME(eddyb) maybe encode implicit delimiters somehow?
-                        // One way could be to have an opaque `FlatToken` variant,
-                        // containing the entire group, instead of exposing its contents.
-                        flatten(stream, out);
-                        continue;
-                    }
-                };
-                out.push(FlatToken::Delim(open, span));
-                flatten(stream, out);
-                FlatToken::Delim(close, span)
-            }
-            TokenTree::Ident(tt) => FlatToken::Ident(tt),
-            TokenTree::Punct(tt) => FlatToken::Punct(tt),
-            TokenTree::Literal(tt) => FlatToken::Literal(tt),
-        };
-        out.push(flat);
     }
 }

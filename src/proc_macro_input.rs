@@ -1,5 +1,6 @@
 use crate::input::{Input, InputMatch, Range};
-use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Span, TokenStream};
+use crate::proc_macro::{FlatTokenPat, Span, TokenStream};
+use flat_token::{flatten, FlatToken};
 use indexing::{proof::Provable, Container, Index, Unknown};
 use std::ops;
 
@@ -57,7 +58,7 @@ impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
         if self
             .iter()
             .zip(pat)
-            .take_while(|(t, p)| t.matches_pat(p))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {
@@ -71,7 +72,7 @@ impl InputMatch<[FlatTokenPat<&'_ str>]> for [FlatToken] {
             .iter()
             .zip(pat)
             .rev()
-            .take_while(|(t, p)| t.matches_pat(p))
+            .take_while(|(t, p)| p.matches(t))
             .count()
             == pat.len()
         {
