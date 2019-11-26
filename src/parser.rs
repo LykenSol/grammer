@@ -1,3 +1,4 @@
+use super::RangeExt;
 use crate::forest::{GrammarReflector, Node, ParseForest};
 use crate::input::{Input, InputMatch};
 use std::collections::HashMap;
@@ -29,20 +30,20 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         input: I,
         f: impl for<'i2> FnOnce(Parser<'_, G, I, Pat>) -> Option<Node<G>>,
     ) -> ParseResult<I::SourceInfoPoint, Pat, (ParseForest<G, I>, Node<G>)> {
-        let range = input.range();
+        let range = 0..input.len();
         let mut state = ParserState {
             forest: ParseForest {
                 grammar,
                 input: input.to_container(),
                 possibilities: HashMap::new(),
             },
-            last_input_pos: range.first(),
+            last_input_pos: 0,
             expected_pats: vec![],
         };
 
         let result = f(Parser {
             state: &mut state,
-            result: 0..input.len(),
+            result: 0..0,
             remaining: range,
         });
 
@@ -79,7 +80,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
     /// (at the end of the current result / start of the remaining input).
     pub fn take_result(&mut self) -> Range<usize> {
         let result = self.result;
-        self.result = Range(result.frontiers().1);
+        self.result = result.end..result.end;
         result
     }
 
@@ -89,7 +90,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         remaining: Range<usize>,
     ) -> Parser<'a, G, I, Pat> {
         // HACK(eddyb) enforce that `result` and `remaining` are inside `self`.
-        assert_eq!(self.result, Range(self.remaining.frontiers().0));
+        assert_eq!(self.result, self.remaining.start..self.remaining.start);
         let full_new_range = result.join(remaining.0).unwrap();
         assert!(self.remaining.start() <= full_new_range.start());
         assert_eq!(self.remaining.end(), full_new_range.end());
@@ -122,8 +123,8 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
                 }
                 Some(Parser {
                     state: self.state,
-                    result: Range(self.result.join(matching).unwrap()),
-                    remaining: Range(after),
+                    result: (self.result.join(matching).unwrap()),
+                    remaining: (after),
                 })
             }
             None => {
@@ -148,8 +149,8 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
                 let (before, matching, _) = self.remaining.split_at(self.remaining.len() - n);
                 Some(Parser {
                     state: self.state,
-                    result: Range(matching.join(self.result.0).unwrap()),
-                    remaining: Range(before),
+                    result: matching.join(self.result.0).unwrap(),
+                    remaining: before,
                 })
             }
             None => None,
@@ -171,7 +172,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
 
     // FIXME(eddyb) safeguard this against misuse.
     pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<G>) {
-        self.result = Range(left.range.join(self.result.0).unwrap());
+        self.result = left.range.join(self.result.0).unwrap();
         self.state
             .forest
             .possibilities

@@ -34,6 +34,29 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::hash::Hash;
 
+use std::ops::Range;
+
+trait RangeExt<Idx> {
+    fn split_at(&self, idx: Idx) -> (Range<Idx>, Range<Idx>);
+    fn join(&self, other: Range<Idx>) -> Result<Range<Idx>, Box<dyn std::error::Error>>;
+}
+
+impl<Idx> RangeExt<Idx> for Range<Idx>
+where
+    Idx: Copy,
+{
+    fn split_at(&self, idx: Idx) -> (Range<Idx>, Range<Idx>) {
+        (self.start..idx, idx..self.end)
+    }
+
+    fn join(&self, other: Range<Idx>) -> Result<Range<Idx>, Box<dyn std::error::Error>> {
+        if self.end != other.start {
+            return Err("ranges must be adjacent".into());
+        }
+        Ok(self.start..other.end)
+    }
+}
+
 pub struct Grammar {
     pub rules: IndexMap<IStr, rule::RuleWithFields>,
 }

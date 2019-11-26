@@ -99,9 +99,7 @@ impl<G: GrammarReflector> fmt::Debug for Node<G> {
         write!(
             f,
             "{:?} @ {}..{}",
-            self.kind,
-            self.range.start(),
-            self.range.end()
+            self.kind, self.range.start, self.range.end
         )
     }
 }
@@ -167,11 +165,11 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
                 (
                     Node {
                         kind: left_kind,
-                        range: Range(left),
+                        range: left,
                     },
                     Node {
                         kind: right_kind,
-                        range: Range(right),
+                        range: right,
                     },
                 )
             }

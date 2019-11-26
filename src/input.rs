@@ -1,6 +1,5 @@
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::ops::{self, Deref, RangeInclusive};
+use std::ops::{self, Deref, Range, RangeInclusive};
 use std::str;
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,14 +39,15 @@ impl fmt::Debug for LineColumnRange {
 
 pub trait Input: Sized {
     type Container: Deref<Target = Self::Slice>;
-    type Slice: std::ops::Index<std::ops::Range<usize>, Output = Self::Slice> + ?Sized;
+    type Slice: std::ops::Index<Range<usize>, Output = Self::Slice> + ?Sized;
     type SourceInfo: fmt::Debug;
     // FIXME(eddyb) remove - replace with `SourceInfo` for the affected range
     type SourceInfoPoint: fmt::Debug;
     fn to_container(self) -> Self::Container;
-    fn slice<'a>(input: &'a Self::Container, range: std::ops::Range<usize>) -> &'a Self::Slice;
-    fn source_info(input: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo;
+    fn slice<'a>(input: &'a Self::Container, range: Range<usize>) -> &'a Self::Slice;
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo;
     fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint;
+    fn len(&self) -> usize;
 }
 
 impl<T> Input for &[T] {
@@ -58,10 +58,10 @@ impl<T> Input for &[T] {
     fn to_container(self) -> Self::Container {
         self
     }
-    fn slice<'b>(input: &'b Self::Container, range: std::ops::Range<usize>) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
-    fn source_info(_: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo {
+    fn source_info(_: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
         range
     }
     fn source_info_point(_: &Self::Container, index: usize) -> Self::SourceInfoPoint {
@@ -77,10 +77,10 @@ impl<'a> Input for &'a str {
     fn to_container(self) -> Self::Container {
         self.into()
     }
-    fn slice<'b>(input: &'b Self::Container, range: std::ops::Range<usize>) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
-    fn source_info(input: &Self::Container, range: std::ops::Range<usize>) -> Self::SourceInfo {
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
         let start = Self::source_info_point(input, range.start);
         // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
         // Ideally we'd cache around a line map, like rustc's `SourceMap`.
