@@ -1,12 +1,12 @@
-use crate::input::{Input, InputMatch, Range};
+use crate::input::{Input, InputMatch};
 use crate::proc_macro::{flatten, FlatToken, FlatTokenPat, Span, TokenStream};
 use indexing::{proof::Provable, Container, Index, Unknown};
-use std::ops;
+use std::ops::Range;
 
 impl Input for TokenStream {
     type Container = Vec<FlatToken>;
     type Slice = [FlatToken];
-    type SourceInfo = ops::Range<Span>;
+    type SourceInfo = Range<Span>;
     type SourceInfoPoint = Span;
     fn to_container(self) -> Self::Container {
         let mut out = vec![];
