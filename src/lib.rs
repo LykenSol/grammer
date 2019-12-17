@@ -43,7 +43,7 @@ trait RangeExt<Idx> {
 
 impl<Idx> RangeExt<Idx> for Range<Idx>
 where
-    Idx: Copy,
+    Idx: Copy + Eq,
 {
     fn split_at(&self, idx: Idx) -> (Range<Idx>, Range<Idx>) {
         (self.start..idx, idx..self.end)

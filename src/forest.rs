@@ -60,7 +60,6 @@ pub struct Node<G: GrammarReflector> {
 }
 
 // FIXME(eddyb) can't derive these on `Node<G>` because that puts bounds on `G`.
-impl<G: GrammarReflector> Copy for Node<G> {}
 impl<G: GrammarReflector> Clone for Node<G> {
     fn clone(&self) -> Self {
         *self
