@@ -67,6 +67,9 @@ impl<T> Input for &[T] {
     fn source_info_point(_: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         index
     }
+    fn len(&self) -> usize {
+        self.len()
+    }
 }
 
 impl<'a> Input for &'a str {
@@ -93,6 +96,9 @@ impl<'a> Input for &'a str {
     }
     fn source_info_point<'i>(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         LineColumn::count(&input[..index])
+    }
+    fn len(&self) -> usize {
+        self.len()
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::input::Input;
+use crate::RangeExt;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -160,7 +161,7 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
     fn split_children(&self, node: Node<G>, split: usize) -> (Node<G>, Node<G>) {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Split(left_kind, right_kind) => {
-                let (left, right, _) = node.range.split_at(split);
+                let (left, right) = node.range.split_at(split);
                 (
                     Node {
                         kind: left_kind,

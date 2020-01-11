@@ -109,7 +109,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
     where
         I::Slice: InputMatch<SpecificPat>,
     {
-        let start = self.remaining.first();
+        let start = self.remaining.start;
         if start > self.state.last_input_pos {
             self.state.last_input_pos = start;
             self.state.expected_pats.clear();
@@ -117,8 +117,8 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         match self.state.forest.input(self.remaining).match_left(&pat) {
             Some(n) => {
                 let (matching, after) = self.remaining.split_at(n);
-                if after.first() > self.state.last_input_pos {
-                    self.state.last_input_pos = after.first();
+                if after.start > self.state.last_input_pos {
+                    self.state.last_input_pos = after.start;
                     self.state.expected_pats.clear();
                 }
                 Some(Parser {
