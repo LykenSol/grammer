@@ -13,16 +13,10 @@ impl Input for TokenStream {
         flatten(self, &mut out);
         out
     }
-    fn slice<'b>(
-        input: &'b Self::Container,
-        range: ops::Range<usize>,
-    ) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: ops::Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
-    fn source_info(
-        input: &Self::Container,
-        range: ops::Range<usize>,
-    ) -> Self::SourceInfo {
+    fn source_info(input: &Self::Container, range: ops::Range<usize>) -> Self::SourceInfo {
         // FIXME(eddyb) should be joining up spans, but the API
         // for that is still "semver-exempt" in `proc-macro2`.
         let last = range
@@ -31,10 +25,7 @@ impl Input for TokenStream {
             .unwrap_or(range.past_the_end());
         Self::source_info_point(input, range.first())..Self::source_info_point(input, last)
     }
-    fn source_info_point(
-        input: &Self::Container,
-        index: usize
-    ) -> Self::SourceInfoPoint {
+    fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         // Try to get as much information as possible.
         let (before, after) = input.split_at(index);
         let before = &input[before];
