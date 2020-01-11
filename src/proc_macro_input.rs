@@ -25,8 +25,6 @@ impl Input for TokenStream {
     fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         // Try to get as much information as possible.
         let (before, after) = input.split_at(index);
-        let before = &input[before];
-        let after = &input[after];
         if let Some(first) = after.first() {
             first.span()
         } else if let Some(last) = before.last() {
