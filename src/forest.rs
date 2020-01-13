@@ -71,13 +71,15 @@ impl<G: GrammarReflector> PartialEq for Node<G> {
         (self.kind, self.range) == (other.kind, other.range)
     }
 }
+
 impl<G: GrammarReflector> Eq for Node<G> {}
 impl<G: GrammarReflector> PartialOrd for Node<G>
 where
     G::NodeKind: PartialOrd,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.kind, self.range).partial_cmp(&(other.kind, other.range))
+        (self.kind, (self.range.start, self.range.end))
+            .partial_cmp(&(other.kind, (other.range.start, other.range.end)))
     }
 }
 impl<G: GrammarReflector> Ord for Node<G>
@@ -85,7 +87,8 @@ where
     G::NodeKind: Ord,
 {
     fn cmp(&self, other: &Self) -> Ordering {
-        (self.kind, self.range).cmp(&(other.kind, other.range))
+        (self.kind, (self.range.start, self.range.end))
+            .cmp(&(other.kind, (other.range.start, other.range.end)))
     }
 }
 impl<G: GrammarReflector> Hash for Node<G> {
