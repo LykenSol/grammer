@@ -1,12 +1,6 @@
 #![deny(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
-// NOTE only these two modules can and do contain unsafe code.
-#[allow(unsafe_code)]
-mod high;
-#[allow(unsafe_code)]
-mod indexing_str;
-
 #[forbid(unsafe_code)]
 pub mod context;
 #[forbid(unsafe_code)]
@@ -33,6 +27,29 @@ use crate::context::{Context, IStr};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::hash::Hash;
+
+use std::ops::Range;
+
+trait RangeExt<Idx> {
+    fn split_at(&self, idx: Idx) -> (Range<Idx>, Range<Idx>);
+    fn join(&self, other: Range<Idx>) -> Result<Range<Idx>, Box<dyn std::error::Error>>;
+}
+
+impl<Idx> RangeExt<Idx> for Range<Idx>
+where
+    Idx: Copy + Eq,
+{
+    fn split_at(&self, idx: Idx) -> (Range<Idx>, Range<Idx>) {
+        (self.start..idx, idx..self.end)
+    }
+
+    fn join(&self, other: Range<Idx>) -> Result<Range<Idx>, Box<dyn std::error::Error>> {
+        if self.end != other.start {
+            return Err("ranges must be adjacent".into());
+        }
+        Ok(self.start..other.end)
+    }
+}
 
 pub struct Grammar {
     pub rules: IndexMap<IStr, rule::RuleWithFields>,

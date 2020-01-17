@@ -1,46 +1,6 @@
-use crate::indexing_str;
-use indexing::container_traits::Trustworthy;
-use indexing::{self, Container, Index, Unknown};
-use std::cmp::Ordering;
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::ops::{self, Deref, RangeInclusive};
+use std::ops::{self, Deref, Range, RangeInclusive};
 use std::str;
-
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub struct Range<'i>(pub indexing::Range<'i>);
-
-impl<'i> Deref for Range<'i> {
-    type Target = indexing::Range<'i>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl PartialOrd for Range<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        (self.start(), self.end()).partial_cmp(&(other.start(), other.end()))
-    }
-}
-
-impl Ord for Range<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (self.start(), self.end()).cmp(&(other.start(), other.end()))
-    }
-}
-
-impl Hash for Range<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.start(), self.end()).hash(state);
-    }
-}
-
-impl Range<'_> {
-    pub fn subtract_suffix(self, other: Self) -> Self {
-        assert_eq!(self.end(), other.end());
-        Range(self.split_at(other.start() - self.start()).0)
-    }
-}
 
 #[derive(Copy, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LineColumn {
@@ -78,24 +38,16 @@ impl fmt::Debug for LineColumnRange {
 }
 
 pub trait Input: Sized {
-    type Container: Trustworthy;
-    type Slice: ?Sized;
+    type Container: Deref<Target = Self::Slice>;
+    type Slice: std::ops::Index<Range<usize>, Output = Self::Slice> + ?Sized;
     type SourceInfo: fmt::Debug;
     // FIXME(eddyb) remove - replace with `SourceInfo` for the affected range
     type SourceInfoPoint: fmt::Debug;
     fn to_container(self) -> Self::Container;
-    fn slice<'a, 'i>(
-        input: &'a Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> &'a Self::Slice;
-    fn source_info<'i>(
-        input: &Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> Self::SourceInfo;
-    fn source_info_point<'i>(
-        input: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
-    ) -> Self::SourceInfoPoint;
+    fn slice<'a>(input: &'a Self::Container, range: Range<usize>) -> &'a Self::Slice;
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo;
+    fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint;
+    fn len(input: &Self::Container) -> usize;
 }
 
 impl<T> Input for &[T] {
@@ -106,42 +58,33 @@ impl<T> Input for &[T] {
     fn to_container(self) -> Self::Container {
         self
     }
-    fn slice<'b, 'i>(
-        input: &'b Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> &'b Self::Slice {
-        &input[range.0]
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
+        &input[range]
     }
-    fn source_info<'i>(_: &Container<'i, Self::Container>, range: Range<'i>) -> Self::SourceInfo {
-        range.as_range()
+    fn source_info(_: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
+        range
     }
-    fn source_info_point<'i>(
-        _: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
-    ) -> Self::SourceInfoPoint {
-        index.integer()
+    fn source_info_point(_: &Self::Container, index: usize) -> Self::SourceInfoPoint {
+        index
+    }
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 
 impl<'a> Input for &'a str {
-    type Container = &'a indexing_str::Str;
+    type Container = &'a str;
     type Slice = str;
     type SourceInfo = LineColumnRange;
     type SourceInfoPoint = LineColumn;
     fn to_container(self) -> Self::Container {
         self.into()
     }
-    fn slice<'b, 'i>(
-        input: &'b Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> &'b Self::Slice {
-        indexing_str::Str::slice(input, range.0)
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
+        &input[range]
     }
-    fn source_info<'i>(
-        input: &Container<'i, Self::Container>,
-        range: Range<'i>,
-    ) -> Self::SourceInfo {
-        let start = Self::source_info_point(input, range.first());
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
+        let start = Self::source_info_point(input, range.start);
         // HACK(eddyb) add up `LineColumn`s to avoid counting twice.
         // Ideally we'd cache around a line map, like rustc's `SourceMap`.
         let mut end = LineColumn::count(Self::slice(input, range));
@@ -151,12 +94,11 @@ impl<'a> Input for &'a str {
         }
         LineColumnRange { start, end }
     }
-    fn source_info_point<'i>(
-        input: &Container<'i, Self::Container>,
-        index: Index<'i, Unknown>,
-    ) -> Self::SourceInfoPoint {
-        let prefix_range = Range(input.split_at(index).0);
-        LineColumn::count(Self::slice(input, prefix_range))
+    fn source_info_point<'i>(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
+        LineColumn::count(&input[..index])
+    }
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 
