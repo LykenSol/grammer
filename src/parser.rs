@@ -31,7 +31,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         f: impl for<'i2> FnOnce(Parser<'_, G, I, Pat>) -> Option<Node<G>>,
     ) -> ParseResult<I::SourceInfoPoint, Pat, (ParseForest<G, I>, Node<G>)> {
         let container: I::Container = input.to_container();
-        let range = 0..Input::len(&container);
+        let range = 0..I::len(&container);
         let mut state = ParserState {
             forest: ParseForest {
                 grammar,
@@ -45,7 +45,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         let result = f(Parser {
             state: &mut state,
             result: 0..0,
-            remaining: range,
+            remaining: range.clone(),
         });
 
         let mut error = ParseError {
@@ -70,17 +70,17 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
 
     // FIXME(eddyb) find an nicer way for algorithms to manipulate these ranges.
     pub fn result(&self) -> Range<usize> {
-        self.result
+        self.result.clone()
     }
 
     pub fn remaining(&self) -> Range<usize> {
-        self.remaining
+        self.remaining.clone()
     }
 
     /// Get the current result range, and leave behind an empty range
     /// (at the end of the current result / start of the remaining input).
     pub fn take_result(&mut self) -> Range<usize> {
-        let result = self.result;
+        let result = self.result.clone();
         self.result = result.end..result.end;
         result
     }
@@ -92,14 +92,14 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
     ) -> Parser<'a, G, I, Pat> {
         // HACK(eddyb) enforce that `result` and `remaining` are inside `self`.
         assert_eq!(self.result, self.remaining.start..self.remaining.start);
-        let full_new_range = result.join(remaining).unwrap();
+        let full_new_range = result.join(remaining.clone()).unwrap();
         assert!(self.remaining.start <= full_new_range.start);
         assert_eq!(self.remaining.end, full_new_range.end);
 
         Parser {
             state: self.state,
             result,
-            remaining,
+            remaining: remaining.clone(),
         }
     }
 
@@ -115,7 +115,12 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
             self.state.last_input_pos = start;
             self.state.expected_pats.clear();
         }
-        match self.state.forest.input(self.remaining).match_left(&pat) {
+        match self
+            .state
+            .forest
+            .input(self.remaining.clone())
+            .match_left(&pat)
+        {
             Some(n) => {
                 let (matching, after) = self.remaining.split_at(n);
                 if after.start > self.state.last_input_pos {
@@ -145,12 +150,17 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         I::Slice: InputMatch<SpecificPat>,
     {
         // FIXME(eddyb) implement error reporting support like in `input_consume_left`
-        match self.state.forest.input(self.remaining).match_right(&pat) {
+        match self
+            .state
+            .forest
+            .input(self.remaining.clone())
+            .match_right(&pat)
+        {
             Some(n) => {
                 let (before, matching) = self.remaining.split_at(self.remaining.len() - n);
                 Some(Parser {
                     state: self.state,
-                    result: matching.join(self.result).unwrap(),
+                    result: matching.join(self.result.clone()).unwrap(),
                     remaining: before,
                 })
             }
@@ -165,7 +175,7 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
             .possibilities
             .entry(Node {
                 kind,
-                range: self.result,
+                range: self.result.clone(),
             })
             .or_default()
             .insert(choice);
@@ -173,13 +183,13 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
 
     // FIXME(eddyb) safeguard this against misuse.
     pub fn forest_add_split(&mut self, kind: G::NodeKind, left: Node<G>) {
-        self.result = left.range.join(self.result).unwrap();
+        self.result = left.range.join(self.result.clone()).unwrap();
         self.state
             .forest
             .possibilities
             .entry(Node {
                 kind,
-                range: self.result,
+                range: self.result.clone(),
             })
             .or_default()
             .insert(left.range.len());

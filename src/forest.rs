@@ -206,7 +206,7 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
         self.possibilities[&node]
             .iter()
             .cloned()
-            .map(move |split| self.split_children(node, split))
+            .map(move |split| self.split_children(node.clone(), split))
     }
 
     pub fn unpack_alias(&self, node: Node<G>) -> Node<G> {
@@ -248,21 +248,21 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
             )
         };
         while let Some(source) = queue.pop_front() {
-            let source_name = node_name(source);
+            let source_name = node_name(source.clone());
             writeln!(out, "    {:?} [shape=box]", source_name)?;
             let mut add_children = |children: &[(&str, Node<G>)]| -> io::Result<()> {
                 writeln!(out, r#"    p{} [label="" shape=point]"#, p)?;
                 writeln!(out, "    {:?} -> p{}:n", source_name, p)?;
-                for &(port, child) in children {
+                for (port, child) in children {
                     writeln!(
                         out,
                         "    p{}:{} -> {:?}:n [dir=none]",
                         p,
                         port,
-                        node_name(child)
+                        node_name(child.clone())
                     )?;
-                    if seen.insert(child) {
-                        queue.push_back(child);
+                    if seen.insert(child.clone()) {
+                        queue.push_back(child.clone());
                     }
                 }
                 p += 1;
