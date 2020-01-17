@@ -1,12 +1,6 @@
 #![deny(unsafe_code)]
 #![deny(rust_2018_idioms)]
 
-// NOTE only these two modules can and do contain unsafe code.
-#[allow(unsafe_code)]
-mod high;
-#[allow(unsafe_code)]
-mod indexing_str;
-
 #[forbid(unsafe_code)]
 pub mod context;
 #[forbid(unsafe_code)]
