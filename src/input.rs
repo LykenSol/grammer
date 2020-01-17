@@ -47,7 +47,7 @@ pub trait Input: Sized {
     fn slice<'a>(input: &'a Self::Container, range: Range<usize>) -> &'a Self::Slice;
     fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo;
     fn source_info_point(input: &Self::Container, index: usize) -> Self::SourceInfoPoint;
-    fn len(&self) -> usize;
+    fn len(input: &Self::Container) -> usize;
 }
 
 impl<T> Input for &[T] {
@@ -67,8 +67,8 @@ impl<T> Input for &[T] {
     fn source_info_point(_: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         index
     }
-    fn len(&self) -> usize {
-        self.len()
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 
@@ -97,8 +97,8 @@ impl<'a> Input for &'a str {
     fn source_info_point<'i>(input: &Self::Container, index: usize) -> Self::SourceInfoPoint {
         LineColumn::count(&input[..index])
     }
-    fn len(&self) -> usize {
-        self.len()
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 

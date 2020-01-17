@@ -30,11 +30,12 @@ impl<G: GrammarReflector, I: Input, Pat: Ord> Parser<'_, G, I, Pat> {
         input: I,
         f: impl for<'i2> FnOnce(Parser<'_, G, I, Pat>) -> Option<Node<G>>,
     ) -> ParseResult<I::SourceInfoPoint, Pat, (ParseForest<G, I>, Node<G>)> {
-        let range = 0..input.len();
+        let container: I::Container = input.to_container();
+        let range = 0..Input::len(&container);
         let mut state = ParserState {
             forest: ParseForest {
                 grammar,
-                input: input.to_container(),
+                input: container,
                 possibilities: HashMap::new(),
             },
             last_input_pos: 0,

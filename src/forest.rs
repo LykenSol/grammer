@@ -63,12 +63,16 @@ pub struct Node<G: GrammarReflector> {
 // FIXME(eddyb) can't derive these on `Node<G>` because that puts bounds on `G`.
 impl<G: GrammarReflector> Clone for Node<G> {
     fn clone(&self) -> Self {
-        *self
+        Self {
+            kind: self.kind,
+            range: self.range.clone(),
+        }
     }
 }
 impl<G: GrammarReflector> PartialEq for Node<G> {
     fn eq(&self, other: &Self) -> bool {
-        (self.kind, self.range) == (other.kind, other.range)
+        (self.kind, (self.range.start, self.range.end))
+            == (other.kind, (other.range.start, other.range.end))
     }
 }
 
@@ -93,7 +97,7 @@ where
 }
 impl<G: GrammarReflector> Hash for Node<G> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        (self.kind, self.range).hash(state);
+        (self.kind, (self.range.start, self.range.end)).hash(state);
     }
 }
 
@@ -157,7 +161,7 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
         self.possibilities[&node]
             .iter()
             .cloned()
-            .map(move |choice| self.choice_child(node, choice))
+            .map(move |choice| self.choice_child(node.clone(), choice))
     }
 
     // NOTE(eddyb) this is a private helper and should never be exported.
@@ -218,7 +222,7 @@ impl<G: GrammarReflector, I: Input> ParseForest<G, I> {
     pub fn unpack_opt(&self, node: Node<G>) -> Option<Node<G>> {
         match self.grammar.node_shape(node.kind) {
             NodeShape::Opt(inner) => {
-                if node.range.is_empty() {
+                if !(node.range.start < node.range.end) {
                     None
                 } else {
                     Some(Node {
@@ -328,12 +332,12 @@ pub mod typed {
             let state = state.as_mut();
             assert_eq!(state.len(), Self::Shape::STATE_LEN);
 
-            Self::Shape::init(forest, node, state);
+            Self::Shape::init(forest, node.clone(), state);
 
             let mut fields = Self::Fields::default();
-            Self::Shape::read(forest, node, state, fields.as_mut());
+            Self::Shape::read(forest, node.clone(), state, fields.as_mut());
 
-            if Self::Shape::step(forest, node, state) {
+            if Self::Shape::step(forest, node.clone(), state) {
                 Err(MoreThanOne)
             } else {
                 Ok(Self::from_shape_fields(forest, fields))
@@ -347,7 +351,7 @@ pub mod typed {
             let mut state = Self::State::default();
             assert_eq!(state.as_mut().len(), Self::Shape::STATE_LEN);
 
-            Self::Shape::init(forest, node, state.as_mut());
+            Self::Shape::init(forest, node.clone(), state.as_mut());
 
             ShapedAllIter {
                 forest,
@@ -372,8 +376,8 @@ pub mod typed {
         fn next(&mut self) -> Option<T::Output> {
             let state = self.state.as_mut()?.as_mut();
             let mut fields = T::Fields::default();
-            T::Shape::read(self.forest, self.node, state, fields.as_mut());
-            if !T::Shape::step(self.forest, self.node, state) {
+            T::Shape::read(self.forest, self.node.clone(), state, fields.as_mut());
+            if !T::Shape::step(self.forest, self.node.clone(), state) {
                 self.state.take();
             }
             Some(T::from_shape_fields(self.forest, fields))
@@ -542,11 +546,11 @@ pub mod typed {
             let state_split = &mut state_split[0];
             let (state_left, state_right) = state.split_at_mut(Left::STATE_LEN);
 
-            let (left, right) = forest.split_children(node, *state_split);
+            let (left, right) = forest.split_children(node.clone(), *state_split);
 
-            Right::step(forest, right, state_right)
+            Right::step(forest, right.clone(), state_right)
                 || Left::step(forest, left, state_left) && {
-                    Right::init(forest, right, state_right);
+                    Right::init(forest, right.clone(), state_right);
                     true
                 }
                 || ({
@@ -585,8 +589,8 @@ pub mod typed {
             let child = forest.choice_child(node, choice);
 
             state_cases[0] = choice;
-            At::init(forest, child, state_at);
-            Cases::init(forest, child, state_cases);
+            At::init(forest, child.clone(), state_at);
+            Cases::init(forest, child.clone(), state_cases);
         }
         fn read<G: GrammarReflector, I: Input>(
             forest: &ParseForest<G, I>,
@@ -598,8 +602,8 @@ pub mod typed {
 
             let child = forest.choice_child(node, state_cases[0]);
 
-            At::read(forest, child, state_at, fields);
-            Cases::read(forest, child, state_cases, fields);
+            At::read(forest, child.clone(), state_at, fields);
+            Cases::read(forest, child.clone(), state_cases, fields);
         }
         fn step<G: GrammarReflector, I: Input>(
             forest: &ParseForest<G, I>,
@@ -608,16 +612,16 @@ pub mod typed {
         ) -> bool {
             let (state_at, state_cases) = state.split_at_mut(At::STATE_LEN);
 
-            let child = forest.choice_child(node, state_cases[0]);
+            let child = forest.choice_child(node.clone(), state_cases[0]);
 
-            At::step(forest, child, state_at)
-                || Cases::step(forest, child, state_cases) && {
-                    At::init(forest, child, state_at);
+            At::step(forest, child.clone(), state_at)
+                || Cases::step(forest, child.clone(), state_cases) && {
+                    At::init(forest, child.clone(), state_at);
                     true
                 }
                 || ({
                     use std::ops::Bound::*;
-                    forest.possibilities[&node]
+                    forest.possibilities[&node.clone()]
                         .range((Excluded(state_cases[0]), Unbounded))
                         .next()
                         .cloned()
@@ -627,8 +631,8 @@ pub mod typed {
 
                     let child = forest.choice_child(node, choice);
 
-                    At::init(forest, child, state_at);
-                    Cases::init(forest, child, state_cases);
+                    At::init(forest, child.clone(), state_at);
+                    Cases::init(forest, child.clone(), state_cases);
                 })
                 .is_some()
         }

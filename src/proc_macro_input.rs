@@ -37,8 +37,8 @@ impl Input for TokenStream {
         }
     }
 
-    fn len(&self) -> usize {
-        self.len()
+    fn len(input: &Self::Container) -> usize {
+        input.len()
     }
 }
 
