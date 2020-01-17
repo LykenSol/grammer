@@ -1,23 +1,23 @@
 use crate::input::{Input, InputMatch};
 use crate::proc_macro::{FlatTokenPat, Span, TokenStream};
 use flat_token::{flatten, FlatToken};
-use std::ops;
+use std::ops::Range;
 
 impl Input for TokenStream {
     type Container = Vec<FlatToken>;
     type Slice = [FlatToken];
-    type SourceInfo = ops::Range<Span>;
+    type SourceInfo = Range<Span>;
     type SourceInfoPoint = Span;
     fn to_container(self) -> Self::Container {
         let mut out = vec![];
         flatten(self, &mut out);
         out
     }
-    fn slice<'b>(input: &'b Self::Container, range: ops::Range<usize>) -> &'b Self::Slice {
+    fn slice<'b>(input: &'b Self::Container, range: Range<usize>) -> &'b Self::Slice {
         &input[range]
     }
 
-    fn source_info(input: &Self::Container, range: ops::Range<usize>) -> Self::SourceInfo {
+    fn source_info(input: &Self::Container, range: Range<usize>) -> Self::SourceInfo {
         // FIXME(eddyb) should be joining up spans, but the API
         // for that is still "semver-exempt" in `proc-macro2`.
         Self::source_info_point(input, range.start)..Self::source_info_point(input, range.end)
